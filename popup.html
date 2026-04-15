@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YouTube Comments Extractor</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <h1>Extrair comentarios</h1>
+      <p>
+        Abra um video do YouTube, clique no botao abaixo e aguarde a extensao
+        carregar comentarios e respostas.
+      </p>
+
+      <label class="field">
+        Rodadas de scroll
+        <input id="maxScrollRounds" type="number" min="1" max="120" value="30" />
+      </label>
+
+      <button id="extractButton" type="button">Extrair e baixar JSON</button>
+
+      <section class="progress-panel" aria-live="polite" aria-atomic="false">
+        <div class="progress-header">
+          <span id="progressEyebrow">Status</span>
+          <strong id="progressTitle">Pronto.</strong>
+        </div>
+
+        <ol id="progressSteps" class="progress-steps"></ol>
+
+        <div class="metrics" aria-label="Resumo da coleta">
+          <div>
+            <strong id="commentsMetric">0</strong>
+            <span>comentarios</span>
+          </div>
+          <div>
+            <strong id="repliesMetric">0</strong>
+            <span>respostas</span>
+          </div>
+        </div>
+
+        <output id="status" role="status">Aguardando video do YouTube.</output>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

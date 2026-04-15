@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Comments Extractor",
+  "version": "1.0.0",
+  "description": "Carrega comentarios do YouTube e exporta comentarios com respostas ligadas ao comentario pai.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Extrair comentarios",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*", "https://m.youtube.com/watch*"],
+      "js": ["src/extractor-core.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
