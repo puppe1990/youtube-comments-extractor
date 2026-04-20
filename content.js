@@ -6,8 +6,44 @@
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const text = (el) => core.normalizeText(el?.innerText || el?.textContent || "");
   const qsa = (root, selector) => Array.from(root.querySelectorAll(selector));
+  const extractionState = {
+    phase: "idle",
+    runId: null,
+    stage: null,
+    commentsSeen: 0,
+    visibleCommentCount: 0,
+    skipRequestedStage: null,
+    result: null,
+    error: null,
+  };
+
+  function getStateSnapshot() {
+    return {
+      phase: extractionState.phase,
+      runId: extractionState.runId,
+      stage: extractionState.stage,
+      commentsSeen: extractionState.commentsSeen,
+      visibleCommentCount: extractionState.visibleCommentCount,
+      skipRequestedStage: extractionState.skipRequestedStage,
+      result: extractionState.result,
+      error: extractionState.error,
+    };
+  }
 
   function reportProgress(stage, details = {}) {
+    extractionState.phase = "running";
+    extractionState.stage = stage;
+    extractionState.runId = details.runId || extractionState.runId;
+    extractionState.error = null;
+
+    if (typeof details.commentsSeen === "number") {
+      extractionState.commentsSeen = details.commentsSeen;
+    }
+
+    if (typeof details.visibleCommentCount === "number") {
+      extractionState.visibleCommentCount = details.visibleCommentCount;
+    }
+
     try {
       chrome.runtime.sendMessage({
         type: "YT_COMMENTS_PROGRESS",
@@ -82,6 +118,39 @@
     };
   }
 
+  function isReplyExpansionButton(button) {
+    const label = `${text(button)} ${button.getAttribute("aria-label") || ""}`.toLowerCase();
+    const isReactionOrComposer =
+      label.includes("like") ||
+      label.includes("dislike") ||
+      label.includes("gostei") ||
+      label.includes("nao gostei") ||
+      label.includes("não gostei") ||
+      label.includes("responder") ||
+      label.includes("add a reply") ||
+      label.includes("write a reply");
+
+    if (isReactionOrComposer) return false;
+
+    return (
+      /\b(view|show)\b.*\brepl/.test(label) ||
+      /\b(ver|mostrar)\b.*\brespost/.test(label) ||
+      /\b\d+\s+repl/.test(label) ||
+      /\b\d+\s+respost/.test(label) ||
+      label.includes("view reply") ||
+      label.includes("view replies") ||
+      label.includes("show reply") ||
+      label.includes("show replies") ||
+      label.includes("more repl") ||
+      label.includes("ver resposta") ||
+      label.includes("ver respostas") ||
+      label.includes("mostrar resposta") ||
+      label.includes("mostrar respostas") ||
+      label.includes("mais resposta") ||
+      label.includes("mais respostas")
+    );
+  }
+
   async function clickAllReplyButtons(thread) {
     const selectors = [
       "button[aria-label*='respost' i]",
@@ -90,7 +159,10 @@
       "tp-yt-paper-button[aria-label*='reply' i]",
       "#more-replies button",
       "#more-replies tp-yt-paper-button",
+      "#more-replies-sub-thread button",
+      "#more-replies-sub-thread tp-yt-paper-button",
       "ytd-button-renderer#more-replies button",
+      "ytd-button-renderer#more-replies-sub-thread button",
     ];
 
     let clicked = 0;
@@ -101,15 +173,7 @@
         if (seen.has(button)) continue;
         seen.add(button);
 
-        const label = `${text(button)} ${button.getAttribute("aria-label") || ""}`.toLowerCase();
-        const opensReplies =
-          label.includes("respost") ||
-          label.includes("reply") ||
-          label.includes("more repl") ||
-          label.includes("ver resposta") ||
-          label.includes("view repl");
-
-        if (!opensReplies) continue;
+        if (!isReplyExpansionButton(button)) continue;
 
         try {
           button.click();
@@ -124,15 +188,74 @@
     return clicked;
   }
 
+  function getCommentThreads() {
+    return qsa(document, "ytd-comment-thread-renderer");
+  }
+
+  function isVisibleNode(node) {
+    if (!node) return false;
+    if (node.hidden) return false;
+    if (node.getAttribute?.("hidden") !== null) return false;
+    return true;
+  }
+
+  function countVisibleComments(threads = getCommentThreads()) {
+    return threads.reduce((sum, thread) => {
+      const topNode =
+        thread.querySelector("#comment ytd-comment-view-model") ||
+        thread.querySelector("#comment ytd-comment-renderer") ||
+        thread.querySelector("ytd-comment-view-model") ||
+        thread.querySelector("ytd-comment-renderer");
+
+      const replyNodes = qsa(
+        thread,
+        "#replies #contents > ytd-comment-view-model, #replies #contents > ytd-comment-renderer, #replies #expanded-threads ytd-comment-view-model, #replies #expanded-threads ytd-comment-renderer"
+      ).filter((replyNode) => replyNode !== topNode && isVisibleNode(replyNode));
+
+      return sum + (isVisibleNode(topNode) ? 1 : 0) + replyNodes.length;
+    }, 0);
+  }
+
+  async function moveToCommentsSection() {
+    const commentsRoot = document.querySelector("ytd-comments#comments, ytd-comments, #comments");
+
+    try {
+      commentsRoot?.scrollIntoView({ block: "start", behavior: "instant" });
+    } catch {
+      commentsRoot?.scrollIntoView();
+    }
+
+    await wait(900);
+  }
+
+  async function scrollToPageEnd() {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    await wait(1400);
+  }
+
   async function autoScrollComments(maxRounds = 30, runId = null) {
+    await moveToCommentsSection();
+
+    for (let index = 0; index < 3; index++) {
+      await scrollToPageEnd();
+    }
+
     let lastCount = 0;
     let stableRounds = 0;
+    let mappedThreads = getCommentThreads();
+    reportProgress("scroll", {
+      runId,
+      round: 0,
+      maxRounds,
+      commentsSeen: mappedThreads.length,
+      visibleCommentCount: countVisibleComments(mappedThreads),
+    });
 
     for (let index = 0; index < maxRounds; index++) {
-      window.scrollTo(0, document.documentElement.scrollHeight);
-      await wait(1400);
+      await scrollToPageEnd();
 
-      const count = document.querySelectorAll("ytd-comment-thread-renderer").length;
+      mappedThreads = getCommentThreads();
+      const count = mappedThreads.length;
       if (count === lastCount) {
         stableRounds++;
       } else {
@@ -145,16 +268,24 @@
         round: index + 1,
         maxRounds,
         commentsSeen: count,
+        visibleCommentCount: countVisibleComments(mappedThreads),
       });
 
       if (stableRounds >= 2) break;
     }
+
+    return mappedThreads;
   }
 
-  async function expandAllReplies(maxPasses = 4, runId = null) {
+  async function expandAllReplies(threads, maxPasses = 4, runId = null) {
     for (let pass = 0; pass < maxPasses; pass++) {
+      if (extractionState.skipRequestedStage === "replies") {
+        extractionState.skipRequestedStage = null;
+        break;
+      }
+
       let clickedInPass = 0;
-      for (const thread of qsa(document, "ytd-comment-thread-renderer")) {
+      for (const thread of threads) {
         clickedInPass += await clickAllReplyButtons(thread);
       }
 
@@ -163,6 +294,7 @@
         pass: pass + 1,
         maxPasses,
         buttonsClicked: clickedInPass,
+        visibleCommentCount: countVisibleComments(threads),
       });
 
       if (clickedInPass === 0) break;
@@ -170,9 +302,7 @@
     }
   }
 
-  function collect() {
-    const threads = qsa(document, "ytd-comment-thread-renderer");
-
+  function collect(threads = getCommentThreads()) {
     const data = threads.map((thread, index) => {
       const topNode =
         thread.querySelector("#comment ytd-comment-view-model") ||
@@ -199,32 +329,83 @@
       collectedAt: new Date().toISOString(),
       totalThreads: data.length,
       totalReplies: data.reduce((sum, comment) => sum + comment.repliesCount, 0),
+      visibleCommentCount: countVisibleComments(threads),
       data,
     };
   }
 
   async function runExtraction(options = {}) {
-    const maxScrollRounds = Number(options.maxScrollRounds || 30);
+    const maxScrollRounds = Number(options.maxScrollRounds ?? 30);
     const runId = options.runId || null;
 
-    await autoScrollComments(maxScrollRounds, runId);
-    await expandAllReplies(4, runId);
-    reportProgress("collect", { runId });
+    if (extractionState.phase === "running") {
+      throw new Error("Uma extracao ja esta em andamento nesta aba.");
+    }
+
+    extractionState.phase = "running";
+    extractionState.runId = runId;
+    extractionState.stage = "scroll";
+    extractionState.commentsSeen = 0;
+    extractionState.visibleCommentCount = 0;
+    extractionState.skipRequestedStage = null;
+    extractionState.result = null;
+    extractionState.error = null;
+
+    const mappedThreads = await autoScrollComments(maxScrollRounds, runId);
+    await expandAllReplies(mappedThreads, 4, runId);
+    reportProgress("collect", {
+      runId,
+      visibleCommentCount: countVisibleComments(mappedThreads),
+    });
     await wait(1200);
 
-    const result = collect();
+    const result = collect(mappedThreads);
+    if (result.totalThreads === 0) {
+      throw new Error(
+        "Nenhum comentario foi encontrado. Aguarde o YouTube carregar os comentarios ou tente aumentar as rodadas de scroll."
+      );
+    }
+
     window.__YT_COMMENTS__ = result;
+    extractionState.phase = "complete";
+    extractionState.stage = "complete";
+    extractionState.skipRequestedStage = null;
+    extractionState.result = result;
+    extractionState.error = null;
     console.log("[YT Comments Extractor] Resultado salvo em window.__YT_COMMENTS__", result);
 
     return result;
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "YT_COMMENTS_STATUS") {
+      sendResponse({ ok: true, state: getStateSnapshot() });
+      return false;
+    }
+
+    if (message?.type === "YT_COMMENTS_SKIP_STEP") {
+      if (extractionState.phase !== "running" || extractionState.stage !== "replies") {
+        sendResponse({
+          ok: false,
+          error: "Nenhuma etapa pulavel esta ativa no momento.",
+        });
+        return false;
+      }
+
+      extractionState.skipRequestedStage = "replies";
+      sendResponse({ ok: true, skippedStage: "replies" });
+      return false;
+    }
+
     if (message?.type !== "YT_COMMENTS_EXTRACT") return false;
 
     runExtraction(message.options)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => {
+        extractionState.phase = "error";
+        extractionState.stage = extractionState.stage || "scroll";
+        extractionState.skipRequestedStage = null;
+        extractionState.error = error?.message || String(error);
         sendResponse({
           ok: false,
           error: error?.message || String(error),
