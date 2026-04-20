@@ -2,6 +2,7 @@ const extractButton = document.querySelector("#extractButton");
 const skipStepButton = document.querySelector("#skipStepButton");
 const statusOutput = document.querySelector("#status");
 const maxScrollRoundsInput = document.querySelector("#maxScrollRounds");
+const debugPathsInput = document.querySelector("#debugPaths");
 const progressEyebrow = document.querySelector("#progressEyebrow");
 const progressTitle = document.querySelector("#progressTitle");
 const progressSteps = document.querySelector("#progressSteps");
@@ -293,10 +294,10 @@ async function sendTabMessage(tabId, message) {
   }
 }
 
-async function sendExtractionMessage(tabId, maxScrollRounds) {
+async function sendExtractionMessage(tabId, maxScrollRounds, includeDebugPaths) {
   return sendTabMessage(tabId, {
     type: "YT_COMMENTS_EXTRACT",
-    options: { maxScrollRounds, runId: currentRunId },
+    options: { maxScrollRounds, runId: currentRunId, includeDebugPaths },
   });
 }
 
@@ -354,7 +355,8 @@ extractButton.addEventListener("click", async () => {
     startStep("connect", "Conectando ao YouTube");
 
     const maxScrollRounds = Number(maxScrollRoundsInput.value || 30);
-    const response = await sendExtractionMessage(tab.id, maxScrollRounds);
+    const includeDebugPaths = Boolean(debugPathsInput?.checked);
+    const response = await sendExtractionMessage(tab.id, maxScrollRounds, includeDebugPaths);
 
     if (!response?.ok) {
       throw new Error(response?.error || "Nao foi possivel extrair os comentarios.");

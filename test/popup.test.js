@@ -34,6 +34,7 @@ function createPopupHarness({ initialStatus } = {}) {
   const nodes = {
     "#extractButton": createNode(),
     "#skipStepButton": createNode({ textContent: "Pular etapa", disabled: true }),
+    "#debugPaths": createNode({ checked: false }),
     "#status": createNode(),
     "#maxScrollRounds": createNode({ value: "30" }),
     "#progressEyebrow": createNode(),
@@ -157,4 +158,14 @@ test("popup sends manual skip command for replies stage", async () => {
   await nodes["#skipStepButton"].click();
 
   assert.ok(sentMessages.some((message) => message.type === "YT_COMMENTS_SKIP_STEP"));
+});
+
+test("popup includes debug paths option when extraction starts", async () => {
+  const { nodes, sentMessages } = createPopupHarness();
+  nodes["#debugPaths"].checked = true;
+
+  await nodes["#extractButton"].click();
+
+  const extractMessage = sentMessages.find((message) => message.type === "YT_COMMENTS_EXTRACT");
+  assert.equal(extractMessage.options.includeDebugPaths, true);
 });

@@ -312,6 +312,110 @@ test("content extraction reports how many comments are visible on screen", async
   assert.equal(response.result.visibleCommentCount, 3);
 });
 
+test("content extraction prefers lc query param over generic comment node ids", async () => {
+  const topAnchor = createElement({
+    innerText: "há 1 dia",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTop123",
+  });
+  const replyAnchor = createElement({
+    innerText: "há 5 horas",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwReply456",
+  });
+  const topNode = createElement({
+    id: "comment",
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@canal" });
+      if (selector === "#content-text") return createElement({ innerText: "Comentario principal" });
+      if (selector === "a[href*='lc=']") return topAnchor;
+      if (selector === "#vote-count-middle") return createElement({ innerText: "4" });
+      return null;
+    },
+  });
+  const replyNode = createElement({
+    id: "comment",
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@resposta-1" });
+      if (selector === "#content-text") return createElement({ innerText: "Primeira resposta" });
+      if (selector === "a[href*='lc=']") return replyAnchor;
+      return null;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [createStructuredThread({ topNode, replyNodes: [replyNode] })],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "comment-id-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.data[0].commentId, "UgwTop123");
+  assert.equal(response.result.data[0].replies[0].commentId, "UgwReply456");
+  assert.equal(response.result.data[0].replies[0].parentCommentId, "UgwTop123");
+});
+
+test("content extraction includes debug paths when requested", async () => {
+  const topAnchor = createElement({
+    innerText: "há 1 dia",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTop123",
+  });
+  const topNode = createElement({
+    tagName: "YTD-COMMENT-VIEW-MODEL",
+    id: "comment",
+    parentElement: createElement({
+      tagName: "DIV",
+      parentElement: createElement({
+        tagName: "YTD-COMMENT-THREAD-RENDERER",
+        parentElement: createElement({ tagName: "DIV" }),
+        children: [],
+      }),
+      children: [],
+    }),
+    querySelector(selector) {
+      if (selector === "#author-text") {
+        return createElement({
+          innerText: "@canal",
+          tagName: "A",
+          id: "author-text",
+          parentElement: createElement({ tagName: "DIV", children: [] }),
+        });
+      }
+      if (selector === "#content-text") {
+        return createElement({
+          innerText: "Comentario principal",
+          tagName: "YT-ATTRIBUTED-STRING",
+          id: "content-text",
+          parentElement: createElement({ tagName: "DIV", children: [] }),
+        });
+      }
+      if (selector === "a[href*='lc=']") return topAnchor;
+      if (selector === "#vote-count-middle") return createElement({ innerText: "4" });
+      return null;
+    },
+  });
+  const thread = createStructuredThread({ topNode, replyNodes: [] });
+  thread.tagName = "YTD-COMMENT-THREAD-RENDERER";
+  thread.parentElement = createElement({ tagName: "DIV", children: [thread] });
+  topNode.parentElement.parentElement = thread;
+
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "debug-paths-run", includeDebugPaths: true },
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(Object.keys(response.result.data[0].debugPaths).sort(), [
+    "author",
+    "text",
+    "thread",
+  ]);
+});
+
 test("content extraction rejects empty results instead of returning a downloadable JSON", async () => {
   const { listener, sandbox } = loadContentScript({});
 

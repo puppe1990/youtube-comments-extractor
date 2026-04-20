@@ -62,12 +62,85 @@
     };
   }
 
+  function cssEscape(value) {
+    if (globalThis.CSS?.escape) return globalThis.CSS.escape(value);
+    return String(value).replace(/([ #;?%&,.+*~':"!^$[\]()=>|/@])/g, "\\$1");
+  }
+
+  function domPath(node, stopAt = document.body) {
+    if (!node || node.nodeType === 3) {
+      node = node?.parentElement || null;
+    }
+
+    if (!node || node.nodeType && node.nodeType !== 1) return null;
+
+    const parts = [];
+    let current = node;
+
+    while (current && current !== stopAt && current.nodeType !== 9) {
+      let selector = current.tagName?.toLowerCase?.() || null;
+      if (!selector) break;
+
+      if (current.id) {
+        selector += `#${cssEscape(current.id)}`;
+        parts.unshift(selector);
+        break;
+      }
+
+      const parent = current.parentElement;
+      if (parent) {
+        const sameTagSiblings = Array.from(parent.children || []).filter(
+          (child) => child.tagName === current.tagName
+        );
+
+        if (sameTagSiblings.length > 1) {
+          const index = sameTagSiblings.indexOf(current) + 1;
+          selector += `:nth-of-type(${index})`;
+        }
+      }
+
+      parts.unshift(selector);
+      current = current.parentElement;
+    }
+
+    return parts.join(" > ") || null;
+  }
+
+  function getLcCommentIdFromHref(href) {
+    return href?.match(/[?&]lc=([^&]+)/)?.[1] || null;
+  }
+
+  function getNodeAttribute(node, attribute) {
+    const value = node?.getAttribute?.(attribute);
+    return value ? String(value) : null;
+  }
+
+  function isGenericCommentDomId(value) {
+    return value === "comment" || value === "comments";
+  }
+
   function getCommentIdFromNode(node) {
+    const hrefCommentId =
+      getLcCommentIdFromHref(node?.querySelector("a[href*='lc=']")?.href) ||
+      getLcCommentIdFromHref(node?.querySelector("#published-time-text a[href*='lc=']")?.href);
+
+    const dataCommentId =
+      getNodeAttribute(node, "data-id") ||
+      getNodeAttribute(node, "data-comment-id") ||
+      getNodeAttribute(node, "comment-id");
+
+    const domId = node?.id && !isGenericCommentDomId(node.id) ? node.id : null;
+    const nestedCommentDomId =
+      node?.querySelector('[id^="comment"]')?.id &&
+      !isGenericCommentDomId(node.querySelector('[id^="comment"]')?.id)
+        ? node.querySelector('[id^="comment"]')?.id
+        : null;
+
     return (
-      node?.getAttribute("data-id") ||
-      node?.id ||
-      node?.querySelector("a[href*='lc=']")?.href?.match(/[?&]lc=([^&]+)/)?.[1] ||
-      node?.querySelector('[id^="comment"]')?.id ||
+      hrefCommentId ||
+      dataCommentId ||
+      domId ||
+      nestedCommentDomId ||
       null
     );
   }
@@ -75,14 +148,14 @@
   function getThreadCommentId(thread, topNode) {
     return (
       getCommentIdFromNode(topNode) ||
-      thread.getAttribute("data-id") ||
-      thread.id ||
-      thread.querySelector("a[href*='lc=']")?.href?.match(/[?&]lc=([^&]+)/)?.[1] ||
+      getNodeAttribute(thread, "data-id") ||
+      (thread.id && !isGenericCommentDomId(thread.id) ? thread.id : null) ||
+      getLcCommentIdFromHref(thread.querySelector("a[href*='lc=']")?.href) ||
       null
     );
   }
 
-  function parseCommentNode(node, fallbackCommentId = null) {
+  function parseCommentNode(node, fallbackCommentId = null, includeDebugPaths = false) {
     const author =
       text(node.querySelector("#author-text")) ||
       text(node.querySelector("#header-author a")) ||
@@ -107,8 +180,7 @@
       node.querySelector("#author-text")?.href ||
       node.querySelector("#header-author a")?.href ||
       null;
-
-    return {
+    const record = {
       commentId: getCommentIdFromNode(node) || fallbackCommentId,
       author,
       authorChannelUrl,
@@ -116,6 +188,22 @@
       published,
       likes,
     };
+
+    if (includeDebugPaths) {
+      const authorNode = node.querySelector("#author-text") || node.querySelector("#header-author a");
+      const textNode =
+        node.querySelector("#content-text") ||
+        node.querySelector("yt-attributed-string") ||
+        node.querySelector("#comment-content");
+
+      record.debugPaths = {
+        thread: domPath(node),
+        text: domPath(textNode),
+        author: domPath(authorNode),
+      };
+    }
+
+    return record;
   }
 
   function isReplyExpansionButton(button) {
@@ -302,7 +390,7 @@
     }
   }
 
-  function collect(threads = getCommentThreads()) {
+  function collect(threads = getCommentThreads(), includeDebugPaths = false) {
     const data = threads.map((thread, index) => {
       const topNode =
         thread.querySelector("#comment ytd-comment-view-model") ||
@@ -311,7 +399,7 @@
         thread.querySelector("ytd-comment-renderer");
 
       const topComment = topNode
-        ? parseCommentNode(topNode, getThreadCommentId(thread, topNode))
+        ? parseCommentNode(topNode, getThreadCommentId(thread, topNode), includeDebugPaths)
         : { commentId: getThreadCommentId(thread, null) };
 
       const replyNodes = qsa(
@@ -319,7 +407,9 @@
         "#replies ytd-comment-view-model, #replies ytd-comment-renderer"
       ).filter((replyNode) => replyNode !== topNode);
 
-      const replies = replyNodes.map((replyNode) => parseCommentNode(replyNode));
+      const replies = replyNodes.map((replyNode) =>
+        parseCommentNode(replyNode, null, includeDebugPaths)
+      );
 
       return core.buildCommentRecord(topComment, replies, index);
     });
@@ -337,6 +427,7 @@
   async function runExtraction(options = {}) {
     const maxScrollRounds = Number(options.maxScrollRounds ?? 30);
     const runId = options.runId || null;
+    const includeDebugPaths = Boolean(options.includeDebugPaths);
 
     if (extractionState.phase === "running") {
       throw new Error("Uma extracao ja esta em andamento nesta aba.");
@@ -359,7 +450,7 @@
     });
     await wait(1200);
 
-    const result = collect(mappedThreads);
+    const result = collect(mappedThreads, includeDebugPaths);
     if (result.totalThreads === 0) {
       throw new Error(
         "Nenhum comentario foi encontrado. Aguarde o YouTube carregar os comentarios ou tente aumentar as rodadas de scroll."
