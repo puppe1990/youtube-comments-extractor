@@ -93,16 +93,28 @@
     });
   }
 
+  function findContinuationItemToken(items) {
+    if (!Array.isArray(items)) return null;
+
+    for (const item of items) {
+      if (!item?.continuationItemRenderer) continue;
+      const token = findContinuationToken(item);
+      if (token) return token;
+    }
+
+    return null;
+  }
+
   function findCommentsContinuationToken(data, depth = 0) {
     if (!data || typeof data !== "object" || depth > 14) return null;
 
     if (data.sectionIdentifier === "comment-item-section" || data.targetId === "comments-section") {
-      const token = findContinuationToken(data);
+      const token = findContinuationItemToken(data.contents) || findContinuationToken(data);
       if (token) return token;
     }
 
     if (hasCommentsHeader(data)) {
-      const token = findContinuationToken(data);
+      const token = findContinuationItemToken(data.contents) || findContinuationToken(data);
       if (token) return token;
     }
 
@@ -122,7 +134,7 @@
       entity.commentRenderer ||
       entity.commentViewModel?.commentViewModel ||
       entity.commentViewModel ||
-      (entity.commentId ? entity : null)
+      (entity.commentId || entity.commentKey ? entity : null)
     );
   }
 
@@ -136,18 +148,16 @@
       if (!entity) continue;
 
       const properties = entity.properties || {};
+      const author = entity.author?.displayName || readText(entity.author?.name);
       const record = {
         commentId: properties.commentId || null,
-        author: entity.author?.displayName || readText(entity.author?.name),
+        author,
         authorChannelUrl:
           entity.author?.channelPageEndpoint?.innertubeCommand?.browseEndpoint?.canonicalBaseUrl ||
-          null,
+          (author.startsWith("@") ? `https://www.youtube.com/${author}` : null),
         content: readText(properties.content),
         published: properties.publishedTime || "",
-        likes:
-          readText(entity.toolbar?.likeCountLiked) ||
-          readText(entity.toolbar?.likeCountNotliked) ||
-          "0",
+        likes: readText(entity.toolbar?.likeCountNotliked) || "0",
       };
 
       if (entity.key) entities.set(entity.key, record);
@@ -254,6 +264,23 @@
     return Array.isArray(legacyItems) ? legacyItems : items;
   }
 
+  function readContinuationTargetId(payload) {
+    const endpoints = Array.isArray(payload?.onResponseReceivedEndpoints)
+      ? payload.onResponseReceivedEndpoints
+      : [];
+
+    for (const endpoint of endpoints) {
+      for (const action of [
+        endpoint?.appendContinuationItemsAction,
+        endpoint?.reloadContinuationItemsCommand,
+      ]) {
+        if (action?.targetId) return action.targetId;
+      }
+    }
+
+    return null;
+  }
+
   function parseCommentsResponse(payload) {
     const comments = [];
     const entities = readCommentEntities(payload);
@@ -275,11 +302,87 @@
       continuationToken = findContinuationToken(item) || continuationToken;
     }
 
-    return { comments, continuationToken };
+    return { comments, continuationToken, targetId: readContinuationTargetId(payload) };
   }
 
   function parseCommentItems(payload) {
     return parseCommentsResponse(payload).comments;
+  }
+
+  function writeVarint(value) {
+    const bytes = [];
+    let remaining = value;
+
+    while (remaining > 0x7f) {
+      bytes.push((remaining & 0x7f) | 0x80);
+      remaining = Math.floor(remaining / 128);
+    }
+
+    bytes.push(remaining);
+
+    return bytes;
+  }
+
+  function writeVarintField(field, value) {
+    return [...writeVarint(field << 3), ...writeVarint(value)];
+  }
+
+  function writeBytesField(field, bytes) {
+    return [...writeVarint((field << 3) | 2), ...writeVarint(bytes.length), ...bytes];
+  }
+
+  function writeStringField(field, value) {
+    return writeBytesField(field, Array.from(new TextEncoder().encode(String(value))));
+  }
+
+  function buildRepliesContinuationToken({ videoId, commentId, channelId }) {
+    if (!videoId || !commentId || !channelId) return null;
+
+    const commentNode = [
+      ...writeStringField(2, commentId),
+      ...writeBytesField(4, writeVarintField(1, 0)),
+      ...writeStringField(5, channelId),
+      ...writeStringField(6, videoId),
+      ...writeVarintField(8, 1),
+      ...writeVarintField(9, 10),
+      ...writeBytesField(16, writeVarintField(1, 1)),
+    ];
+
+    const bytes = [
+      ...writeBytesField(2, writeStringField(2, videoId)),
+      ...writeVarintField(3, 6),
+      ...writeBytesField(6, [
+        ...writeBytesField(3, commentNode),
+        ...writeStringField(8, `comment-replies-item-${commentId}`),
+      ]),
+    ];
+
+    return btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=/g, "%3D");
+  }
+
+  function findVideoOwnerChannelId(data, depth = 0) {
+    if (!data || typeof data !== "object" || depth > 14) return null;
+
+    const owner = data.videoOwnerRenderer;
+    if (owner) {
+      const channelId =
+        owner.navigationEndpoint?.browseEndpoint?.browseId ||
+        owner.title?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId ||
+        null;
+
+      if (channelId) return channelId;
+    }
+
+    for (const value of Object.values(data)) {
+      if (!value || typeof value !== "object") continue;
+      const channelId = findVideoOwnerChannelId(value, depth + 1);
+      if (channelId) return channelId;
+    }
+
+    return null;
   }
 
   function preview(value, maxLength = 180) {
@@ -315,7 +418,9 @@
 
   return {
     buildCommentRecord,
+    buildRepliesContinuationToken,
     findCommentsContinuationToken,
+    findVideoOwnerChannelId,
     normalizeText,
     parseCommentItems,
     parseCommentsResponse,

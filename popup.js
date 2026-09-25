@@ -272,7 +272,11 @@ function handleProgressMessage(message) {
   if (message.stage === "replies" && message.source === "api") {
     completeStep("scroll");
     startStep("replies", "Carregando respostas via API");
-    setStatus(`Respostas carregadas via API interna: ${message.repliesLoaded || 0}.`, "working");
+    const failed = message.failedThreads ? ` (${message.failedThreads} threads falharam)` : "";
+    setStatus(
+      `Respostas carregadas via API interna: ${message.repliesLoaded || 0}${failed}.`,
+      "working"
+    );
     return;
   }
 
@@ -383,11 +387,17 @@ function readPageApiContextInPage() {
     document.querySelector(`${panelSelector} ytd-comments`)?.data,
   ];
   const ytcfg = globalThis.ytcfg;
+  const videoChannelId =
+    core?.findVideoOwnerChannelId?.(globalThis.ytInitialData) ||
+    document.querySelector("ytd-video-owner-renderer")?.data?.navigationEndpoint?.browseEndpoint
+      ?.browseId ||
+    null;
 
   return {
     clientName: ytcfg?.get?.("INNERTUBE_CLIENT_NAME") || null,
     clientVersion: ytcfg?.get?.("INNERTUBE_CLIENT_VERSION") || null,
     context: ytcfg?.get?.("INNERTUBE_CONTEXT") || null,
+    videoChannelId,
     continuationToken:
       sources.map((data) => core?.findCommentsContinuationToken?.(data) || null).find(Boolean) ||
       null,

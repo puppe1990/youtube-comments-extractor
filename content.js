@@ -424,7 +424,12 @@
       findCommentsPanel(),
     ].filter(Boolean);
 
-    return candidates.find((node) => hasCommentThreads(node)) || candidates[0] || null;
+    return (
+      candidates.find((node) => hasCommentThreads(node)) ||
+      candidates.find((node) => Boolean(node.clientHeight)) ||
+      candidates[0] ||
+      null
+    );
   }
 
   function findCommentsQuickActionButton() {
@@ -436,17 +441,42 @@
     );
   }
 
-  function getCommentsScroller(container) {
-    if (!container?.closest?.(COMMENTS_PANEL_SELECTOR)) return null;
+  function isScrollableNode(node) {
+    if (!node || node.scrollHeight <= node.clientHeight) return false;
 
+    const style = globalThis.getComputedStyle?.(node);
+    if (!style) return true;
+
+    return /(auto|scroll|overlay)/.test(`${style.overflowY} ${style.overflow}`);
+  }
+
+  function getCommentsScrollers(container) {
+    if (!container?.closest?.(COMMENTS_PANEL_SELECTOR)) return [];
+
+    const scrollers = [];
     let current = container;
 
     while (current && current !== document.body) {
-      if (current.scrollHeight > current.clientHeight) return current;
+      if (isScrollableNode(current)) scrollers.push(current);
       current = current.parentElement;
     }
 
-    return null;
+    for (const node of container.querySelectorAll?.("*") || []) {
+      if (isScrollableNode(node)) scrollers.push(node);
+    }
+
+    return scrollers;
+  }
+
+  async function waitForCommentThreads(timeoutMs = 3000) {
+    const attempts = Math.max(1, Math.ceil(timeoutMs / 500));
+
+    for (let index = 0; index < attempts; index++) {
+      if (getCommentThreads().length) return true;
+      await wait(500);
+    }
+
+    return false;
   }
 
   function isVisibleNode(node) {
@@ -494,7 +524,7 @@
     });
   }
 
-  async function waitForReplyChange(thread, topNode, repliesBefore, timeoutMs = 350) {
+  async function waitForReplyChange(thread, topNode, repliesBefore, timeoutMs = 1500) {
     const attempts = Math.max(1, Math.ceil(timeoutMs / 50));
 
     for (let index = 0; index < attempts; index++) {
@@ -515,22 +545,42 @@
     }, 0);
   }
 
-  async function ensureCommentsVisible() {
-    if (document.querySelector(INLINE_COMMENTS_SELECTOR)) return;
-
+  async function openCommentsPanel() {
     const panel = findCommentsPanel();
-    if (panel?.getAttribute?.("visibility") === PANEL_EXPANDED_VISIBILITY) return;
+    if (panel?.getAttribute?.("visibility") === PANEL_EXPANDED_VISIBILITY) return Boolean(panel);
 
     const quickActionButton = findCommentsQuickActionButton();
-    if (!quickActionButton) return;
+    if (!quickActionButton) return Boolean(panel);
 
     try {
       quickActionButton.click();
     } catch {
-      return;
+      return Boolean(panel);
     }
 
-    await wait(900);
+    await waitForCommentThreads(3000);
+
+    return true;
+  }
+
+  async function ensureCommentsVisible() {
+    if (document.querySelector(INLINE_COMMENTS_SELECTOR)) return;
+
+    await openCommentsPanel();
+  }
+
+  async function rescueCommentsLoading(token) {
+    await openCommentsPanel();
+    ensureActiveRun(token);
+
+    for (let index = 0; index < 3; index++) {
+      for (const scroller of getCommentsScrollers(findCommentsPanel())) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+
+      await wait(900);
+      if (getCommentThreads().length) return;
+    }
   }
 
   async function moveToCommentsSection() {
@@ -544,13 +594,16 @@
     }
 
     await wait(900);
+    await waitForCommentThreads(1500);
   }
 
   async function scrollToPageEnd() {
-    const scroller = getCommentsScroller(findCommentsContainer());
+    const scrollers = getCommentsScrollers(findCommentsContainer());
 
-    if (scroller) {
-      scroller.scrollTop = scroller.scrollHeight;
+    if (scrollers.length) {
+      for (const scroller of scrollers) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
     } else {
       window.scrollTo(0, document.documentElement.scrollHeight);
     }
@@ -576,6 +629,12 @@
     let lastCount = 0;
     let stableRounds = 0;
     let mappedThreads = getCommentThreads();
+
+    if (!mappedThreads.length) {
+      await rescueCommentsLoading(token);
+      mappedThreads = getCommentThreads();
+    }
+
     const expectedCommentCount = getExpectedCommentCount();
     reportProgress("scroll", {
       runId,
@@ -617,6 +676,8 @@
   }
 
   async function expandAllReplies(maxPasses = 4, runId = null, token = extractionState.activeToken) {
+    let emptyPasses = 0;
+
     for (let pass = 0; pass < maxPasses; pass++) {
       ensureActiveRun(token);
       if (extractionState.skipRequestedStage === "replies") {
@@ -646,8 +707,11 @@
         visibleCommentCount: countVisibleComments(threads),
       });
 
-      if (threadsExpanded === 0 && repliesLoaded === 0) break;
-      await wait(150);
+      const loadedNothing = threadsExpanded === 0 && repliesLoaded === 0;
+      emptyPasses = loadedNothing ? emptyPasses + 1 : 0;
+
+      if (emptyPasses >= 2) break;
+      await wait(loadedNothing ? 1200 : 150);
     }
   }
 
@@ -732,6 +796,10 @@
       ensureActiveRun(token);
       const parsed = core.parseCommentsResponse(await fetchInnertubeNext(api, continuation));
 
+      if (parsed.targetId?.startsWith("comment-replies-item-")) {
+        throw new Error("A paginacao de comentarios recebeu um token de respostas.");
+      }
+
       for (const comment of parsed.comments) {
         if (comment.commentId && seenCommentIds.has(comment.commentId)) continue;
         if (comment.commentId) seenCommentIds.add(comment.commentId);
@@ -752,29 +820,55 @@
     return comments;
   }
 
+  async function loadThreadReplies(api, comment) {
+    const continuation =
+      comment.repliesContinuationToken ||
+      core.buildRepliesContinuationToken({
+        videoId: getVideoIdFromUrl(location.href),
+        commentId: comment.commentId,
+        channelId: api.videoChannelId,
+      });
+
+    if (!continuation) return 0;
+
+    const seenReplyIds = new Set(comment.replies.map((reply) => reply.commentId).filter(Boolean));
+    let loaded = 0;
+    let next = continuation;
+
+    for (let page = 0; page < API_MAX_REPLY_PAGES && next; page++) {
+      const parsed = core.parseCommentsResponse(await fetchInnertubeNext(api, next));
+
+      for (const reply of parsed.comments) {
+        if (reply.commentId && seenReplyIds.has(reply.commentId)) continue;
+        if (reply.commentId) seenReplyIds.add(reply.commentId);
+        comment.replies.push(reply);
+        loaded++;
+      }
+
+      next = parsed.continuationToken;
+    }
+
+    return loaded;
+  }
+
   async function loadApiReplies(api, comments, runId, token) {
     let repliesLoaded = 0;
+    let failedThreads = 0;
 
     for (const comment of comments) {
-      if (!comment.repliesContinuationToken) continue;
       ensureActiveRun(token);
+      if (!comment.commentId) continue;
 
-      const seenReplyIds = new Set(
-        comment.replies.map((reply) => reply.commentId).filter(Boolean)
-      );
-      let continuation = comment.repliesContinuationToken;
+      try {
+        repliesLoaded += await loadThreadReplies(api, comment);
+      } catch (error) {
+        if (token !== extractionState.activeToken) throw error;
 
-      for (let page = 0; page < API_MAX_REPLY_PAGES && continuation; page++) {
-        const parsed = core.parseCommentsResponse(await fetchInnertubeNext(api, continuation));
-
-        for (const reply of parsed.comments) {
-          if (reply.commentId && seenReplyIds.has(reply.commentId)) continue;
-          if (reply.commentId) seenReplyIds.add(reply.commentId);
-          comment.replies.push(reply);
-          repliesLoaded++;
-        }
-
-        continuation = parsed.continuationToken;
+        failedThreads++;
+        console.warn(
+          "[YT Comments Extractor] Falha ao carregar as respostas de um comentario.",
+          error
+        );
       }
 
       reportProgress("replies", {
@@ -783,6 +877,7 @@
         pass: 1,
         maxPasses: 1,
         repliesLoaded,
+        failedThreads,
         visibleCommentCount: comments.length + repliesLoaded,
         expectedCommentCount: getExpectedCommentCount(),
       });
@@ -856,6 +951,20 @@
     }
   }
 
+  function describeCommentsLayout() {
+    const container = findCommentsContainer();
+    const panel = findCommentsPanel();
+    const name =
+      container?.id || container?.tagName?.toLowerCase?.() || container?.tagName || "desconhecido";
+
+    return [
+      `container: ${container ? name : "nenhum"}`,
+      `painel: ${panel ? "sim" : "nao"}`,
+      `inline: ${document.querySelector(INLINE_COMMENTS_SELECTOR) ? "sim" : "nao"}`,
+      `scrollers: ${getCommentsScrollers(container).length}`,
+    ].join(", ");
+  }
+
   async function runDomExtraction(maxScrollRounds, includeDebugPaths, runId, token) {
     await autoScrollComments(maxScrollRounds, runId, token);
     await expandAllReplies(4, runId, token);
@@ -900,7 +1009,7 @@
 
     if (result.totalThreads === 0) {
       throw new Error(
-        "Nenhum comentario foi encontrado. Aguarde o YouTube carregar os comentarios ou tente aumentar as rodadas de scroll."
+        `Nenhum comentario foi encontrado. Aguarde o YouTube carregar os comentarios ou tente aumentar as rodadas de scroll. (${describeCommentsLayout()})`
       );
     }
 
