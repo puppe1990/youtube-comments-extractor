@@ -53,6 +53,12 @@
     "#replies #contents > ytm-comment-renderer, #replies #expanded-threads ytm-comment-renderer",
     "#replies ytm-comment-renderer",
   ];
+  const ANY_COMMENT_SELECTORS = [
+    "ytd-comment-view-model",
+    "ytd-comment-renderer",
+    "yt-comment-view-model",
+    "ytm-comment-renderer",
+  ];
   const extractionState = {
     phase: "idle",
     runId: null,
@@ -343,6 +349,10 @@
       "button[aria-label*='reply' i]",
       "tp-yt-paper-button[aria-label*='respost' i]",
       "tp-yt-paper-button[aria-label*='reply' i]",
+      "[role='button'][aria-label*='respost' i]",
+      "[role='button'][aria-label*='reply' i]",
+      "yt-button-shape button",
+      "button-view-model button",
       "#more-replies button",
       "#more-replies tp-yt-paper-button",
       "#more-replies-sub-thread button",
@@ -505,11 +515,14 @@
   }
 
   function getVisibleReplyNodes(thread, topNode = getTopCommentNode(thread)) {
-    const replyNodes = uniqueNodes(
-      REPLY_NODE_SELECTORS.flatMap((selector) => qsa(thread, selector))
-    );
+    const candidates = [
+      ...REPLY_NODE_SELECTORS.flatMap((selector) => qsa(thread, selector)),
+      ...ANY_COMMENT_SELECTORS.flatMap((selector) => qsa(thread, selector)),
+    ];
 
-    return replyNodes.filter((replyNode) => replyNode !== topNode && isVisibleNode(replyNode));
+    return uniqueNodes(candidates).filter(
+      (replyNode) => replyNode !== topNode && isVisibleNode(replyNode)
+    );
   }
 
   function dedupeReplyNodes(replyNodes) {

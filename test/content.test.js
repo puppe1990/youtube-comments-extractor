@@ -758,6 +758,117 @@ test("content extraction clicks sub-thread reply buttons", async () => {
   assert.equal(expandClicks, 1);
 });
 
+test("content extraction clicks reply buttons exposed as role=button", async () => {
+  let clicks = 0;
+  let expanded = false;
+  const replyButton = createElement({
+    innerText: "Ver 1 resposta",
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 1 resposta" : null;
+    },
+    click() {
+      clicks++;
+      expanded = true;
+    },
+  });
+  const topNode = createElement({ hidden: false });
+  const visibleReply = createElement({ hidden: false });
+  const thread = createElement({
+    querySelector(selector) {
+      if (
+        selector === "#comment ytd-comment-view-model" ||
+        selector === "#comment ytd-comment-renderer" ||
+        selector === "ytd-comment-view-model" ||
+        selector === "ytd-comment-renderer"
+      ) {
+        return topNode;
+      }
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "ytd-comment-thread-renderer") return [];
+      if (selector === "[role='button'][aria-label*='respost' i]") {
+        return expanded ? [] : [replyButton];
+      }
+      if (
+        selector === "#replies #contents > ytd-comment-view-model, #replies #contents > ytd-comment-renderer, #replies #expanded-threads ytd-comment-view-model, #replies #expanded-threads ytd-comment-renderer" ||
+        selector === "#replies ytd-comment-view-model, #replies ytd-comment-renderer"
+      ) {
+        return expanded ? [visibleReply] : [];
+      }
+      return [];
+    },
+  });
+  const { listener, progressMessages } = loadContentScript({ commentThreads: [thread] });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "role-button-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(clicks, 1);
+  assert.equal(response.result.totalReplies, 1);
+
+  const repliesStage = progressMessages.find((message) => message.stage === "replies");
+  assert.equal(repliesStage.threadsExpanded, 1);
+  assert.equal(repliesStage.repliesLoaded, 1);
+});
+
+test("content extraction finds replies rendered outside the replies container", async () => {
+  const topNode = createElement({
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@autor-topo" });
+      if (selector === "#content-text") return createElement({ innerText: "Comentario topo" });
+      if (selector === "a[href*='lc=']") {
+        return createElement({ href: "https://www.youtube.com/watch?v=test&lc=UgxTopDirect" });
+      }
+      return null;
+    },
+  });
+  const directReply = createElement({
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@resposta-direta" });
+      if (selector === "#content-text") return createElement({ innerText: "Resposta solta" });
+      if (selector === "a[href*='lc=']") {
+        return createElement({ href: "https://www.youtube.com/watch?v=test&lc=UgxReplyDirect" });
+      }
+      return null;
+    },
+  });
+  const thread = createElement({
+    querySelector(selector) {
+      if (
+        selector === "#comment ytd-comment-view-model" ||
+        selector === "#comment ytd-comment-renderer" ||
+        selector === "ytd-comment-view-model" ||
+        selector === "ytd-comment-renderer"
+      ) {
+        return topNode;
+      }
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "ytd-comment-thread-renderer") return [];
+      if (selector === "ytd-comment-view-model") return [topNode, directReply];
+      return [];
+    },
+  });
+  const { listener } = loadContentScript({ commentThreads: [thread] });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "containerless-reply-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 1);
+  assert.equal(response.result.totalReplies, 1);
+  assert.equal(response.result.data[0].replies[0].commentId, "UgxReplyDirect");
+  assert.equal(response.result.data[0].replies[0].content, "Resposta solta");
+  assert.equal(response.result.data[0].replies[0].parentCommentId, "UgxTopDirect");
+});
+
 test("content extraction only counts reply expansion when visible replies increase", async () => {
   let expanded = false;
   const topNode = createElement({ hidden: false });
