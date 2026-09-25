@@ -35,6 +35,9 @@
   const COMMENTS_COUNT_SELECTOR = "ytd-comments-header-renderer";
   const PANEL_EXPANDED_VISIBILITY = "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED";
   const COMMENTS_BUTTON_LABELS = new Set(["comentarios", "comments"]);
+  const NEXT_ENDPOINT = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
+  const API_MAX_PAGES = 40;
+  const API_MAX_REPLY_PAGES = 10;
   const THREAD_SELECTORS = ["ytd-comment-thread-renderer", "ytm-comment-thread-renderer"];
   const TOP_COMMENT_SELECTORS = [
     "#comment ytd-comment-view-model",
@@ -662,12 +665,206 @@
     return {
       ...getVideoMeta(),
       collectedAt: new Date().toISOString(),
+      mode: "dom",
       totalThreads: data.length,
       totalReplies: data.reduce((sum, comment) => sum + comment.repliesCount, 0),
       visibleCommentCount: countVisibleComments(threads),
       expectedCommentCount: getExpectedCommentCount(),
       data,
     };
+  }
+
+  async function fetchInnertubeNext(api, continuation) {
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Youtube-Client-Name": "1",
+    };
+
+    if (api.clientVersion) {
+      headers["X-Youtube-Client-Version"] = String(api.clientVersion);
+    }
+
+    const response = await fetch(NEXT_ENDPOINT, {
+      method: "POST",
+      credentials: "same-origin",
+      headers,
+      body: JSON.stringify({ context: api.context, continuation }),
+    });
+
+    if (!response?.ok) {
+      throw new Error(`O YouTube recusou a requisicao (status ${response?.status ?? "?"}).`);
+    }
+
+    return response.json();
+  }
+
+  async function requestPageApiContext() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "YT_COMMENTS_PAGE_CONTEXT" });
+      return response?.api || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveApiContext(api, token) {
+    if (api?.continuationToken && api?.context) return api;
+
+    await moveToCommentsSection();
+    ensureActiveRun(token);
+    const refreshed = await requestPageApiContext();
+
+    return refreshed?.continuationToken && refreshed?.context ? refreshed : null;
+  }
+
+  async function loadApiComments(api, runId, token) {
+    const comments = [];
+    const seenCommentIds = new Set();
+    let continuation = api.continuationToken;
+
+    for (let page = 0; page < API_MAX_PAGES && continuation; page++) {
+      ensureActiveRun(token);
+      const parsed = core.parseCommentsResponse(await fetchInnertubeNext(api, continuation));
+
+      for (const comment of parsed.comments) {
+        if (comment.commentId && seenCommentIds.has(comment.commentId)) continue;
+        if (comment.commentId) seenCommentIds.add(comment.commentId);
+        comments.push(comment);
+      }
+
+      continuation = parsed.continuationToken;
+      reportProgress("scroll", {
+        runId,
+        source: "api",
+        round: page + 1,
+        maxRounds: API_MAX_PAGES,
+        commentsSeen: comments.length,
+        expectedCommentCount: getExpectedCommentCount(),
+      });
+    }
+
+    return comments;
+  }
+
+  async function loadApiReplies(api, comments, runId, token) {
+    let repliesLoaded = 0;
+
+    for (const comment of comments) {
+      if (!comment.repliesContinuationToken) continue;
+      ensureActiveRun(token);
+
+      const seenReplyIds = new Set(
+        comment.replies.map((reply) => reply.commentId).filter(Boolean)
+      );
+      let continuation = comment.repliesContinuationToken;
+
+      for (let page = 0; page < API_MAX_REPLY_PAGES && continuation; page++) {
+        const parsed = core.parseCommentsResponse(await fetchInnertubeNext(api, continuation));
+
+        for (const reply of parsed.comments) {
+          if (reply.commentId && seenReplyIds.has(reply.commentId)) continue;
+          if (reply.commentId) seenReplyIds.add(reply.commentId);
+          comment.replies.push(reply);
+          repliesLoaded++;
+        }
+
+        continuation = parsed.continuationToken;
+      }
+
+      reportProgress("replies", {
+        runId,
+        source: "api",
+        pass: 1,
+        maxPasses: 1,
+        repliesLoaded,
+        visibleCommentCount: comments.length + repliesLoaded,
+        expectedCommentCount: getExpectedCommentCount(),
+      });
+    }
+
+    return repliesLoaded;
+  }
+
+  function toCommentRecord(comment) {
+    return {
+      commentId: comment.commentId || null,
+      author: comment.author || "",
+      authorChannelUrl: comment.authorChannelUrl || null,
+      content: comment.content || "",
+      published: comment.published || "",
+      likes: comment.likes || "0",
+    };
+  }
+
+  function collectFromApiComments(comments) {
+    const data = comments.map((comment, index) =>
+      core.buildCommentRecord(
+        toCommentRecord(comment),
+        (comment.replies || []).map(toCommentRecord),
+        index
+      )
+    );
+
+    return {
+      ...getVideoMeta(),
+      collectedAt: new Date().toISOString(),
+      mode: "api",
+      totalThreads: data.length,
+      totalReplies: data.reduce((sum, comment) => sum + comment.repliesCount, 0),
+      visibleCommentCount: null,
+      expectedCommentCount: getExpectedCommentCount(),
+      data,
+    };
+  }
+
+  async function tryApiExtraction(api, runId, token) {
+    try {
+      const context = await resolveApiContext(api, token);
+      if (!context) return null;
+
+      const comments = await loadApiComments(context, runId, token);
+      if (!comments.length) return null;
+
+      await loadApiReplies(context, comments, runId, token);
+      reportProgress("collect", {
+        runId,
+        source: "api",
+        commentsSeen: comments.length,
+        expectedCommentCount: getExpectedCommentCount(),
+      });
+
+      return collectFromApiComments(comments);
+    } catch (error) {
+      if (token !== extractionState.activeToken) throw error;
+
+      console.warn("[YT Comments Extractor] Modo API indisponivel, voltando para o DOM.", error);
+      reportProgress("scroll", {
+        runId,
+        source: "api",
+        fallback: true,
+        commentsSeen: 0,
+        expectedCommentCount: getExpectedCommentCount(),
+      });
+
+      return null;
+    }
+  }
+
+  async function runDomExtraction(maxScrollRounds, includeDebugPaths, runId, token) {
+    await autoScrollComments(maxScrollRounds, runId, token);
+    await expandAllReplies(4, runId, token);
+    ensureActiveRun(token);
+    const liveThreads = getCommentThreads();
+    reportProgress("collect", {
+      runId,
+      commentsSeen: liveThreads.length,
+      visibleCommentCount: countVisibleComments(liveThreads),
+      expectedCommentCount: getExpectedCommentCount(),
+    });
+    await wait(1200);
+    ensureActiveRun(token);
+
+    return collect(getCommentThreads(), includeDebugPaths);
   }
 
   async function runExtraction(options = {}) {
@@ -690,20 +887,11 @@
     extractionState.result = null;
     extractionState.error = null;
 
-    await autoScrollComments(maxScrollRounds, runId, token);
-    await expandAllReplies(4, runId, token);
-    ensureActiveRun(token);
-    const liveThreads = getCommentThreads();
-    reportProgress("collect", {
-      runId,
-      commentsSeen: liveThreads.length,
-      visibleCommentCount: countVisibleComments(liveThreads),
-      expectedCommentCount: getExpectedCommentCount(),
-    });
-    await wait(1200);
-    ensureActiveRun(token);
+    const apiResult =
+      options.mode === "api" ? await tryApiExtraction(options.api || null, runId, token) : null;
+    const result =
+      apiResult || (await runDomExtraction(maxScrollRounds, includeDebugPaths, runId, token));
 
-    const result = collect(getCommentThreads(), includeDebugPaths);
     if (result.totalThreads === 0) {
       throw new Error(
         "Nenhum comentario foi encontrado. Aguarde o YouTube carregar os comentarios ou tente aumentar as rodadas de scroll."

@@ -52,6 +52,196 @@
     return Number.isFinite(amount) ? amount : null;
   }
 
+  function readText(value) {
+    if (!value) return "";
+    if (typeof value === "string") return normalizeText(value);
+    if (typeof value.simpleText === "string") return normalizeText(value.simpleText);
+    if (typeof value.content === "string") return normalizeText(value.content);
+    if (typeof value.text === "string") return normalizeText(value.text);
+    if (Array.isArray(value.runs)) {
+      return normalizeText(value.runs.map((run) => run?.text || "").join(""));
+    }
+
+    return "";
+  }
+
+  function findContinuationToken(node, depth = 0) {
+    if (!node || typeof node !== "object" || depth > 14) return null;
+
+    const token =
+      node.continuationEndpoint?.continuationCommand?.token ||
+      node.continuationCommand?.token ||
+      node.nextContinuationData?.continuation;
+
+    if (token) return token;
+
+    for (const value of Object.values(node)) {
+      const found = findContinuationToken(value, depth + 1);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  function hasCommentsHeader(node) {
+    if (node.commentsHeaderRenderer) return true;
+
+    return Object.values(node).some((value) => {
+      if (!value || typeof value !== "object") return false;
+      if (value.commentsHeaderRenderer) return true;
+      return Array.isArray(value) && value.some((item) => item?.commentsHeaderRenderer);
+    });
+  }
+
+  function findCommentsContinuationToken(data, depth = 0) {
+    if (!data || typeof data !== "object" || depth > 14) return null;
+
+    if (data.sectionIdentifier === "comment-item-section" || data.targetId === "comments-section") {
+      const token = findContinuationToken(data);
+      if (token) return token;
+    }
+
+    if (hasCommentsHeader(data)) {
+      const token = findContinuationToken(data);
+      if (token) return token;
+    }
+
+    for (const value of Object.values(data)) {
+      if (!value || typeof value !== "object") continue;
+      const token = findCommentsContinuationToken(value, depth + 1);
+      if (token) return token;
+    }
+
+    return null;
+  }
+
+  function getCommentPayload(entity) {
+    if (!entity || typeof entity !== "object") return null;
+
+    return (
+      entity.commentRenderer ||
+      entity.commentViewModel?.commentViewModel ||
+      entity.commentViewModel ||
+      (entity.commentId ? entity : null)
+    );
+  }
+
+  function parseCommentEntity(entity) {
+    const payload = getCommentPayload(entity);
+    if (!payload) return null;
+
+    const content = readText(payload.contentText) || readText(payload.content);
+    const commentId = payload.commentId || payload.commentKey || null;
+    if (!commentId && !content) return null;
+
+    return {
+      commentId,
+      author: readText(payload.authorText) || readText(payload.authorName),
+      authorChannelUrl:
+        payload.authorEndpoint?.browseEndpoint?.canonicalBaseUrl ||
+        payload.authorEndpoint?.commandMetadata?.webCommandMetadata?.url ||
+        null,
+      content,
+      published: readText(payload.publishedTimeText),
+      likes: readText(payload.voteCount) || readText(payload.likeCount) || "0",
+    };
+  }
+
+  function getCommentRepliesRenderer(renderer) {
+    return renderer?.replies?.commentRepliesRenderer || null;
+  }
+
+  function parseReplies(renderer) {
+    const items = getCommentRepliesRenderer(renderer)?.contents;
+    if (!Array.isArray(items)) return [];
+
+    return items.map((item) => parseCommentEntity(item)).filter(Boolean);
+  }
+
+  function parseRepliesContinuationToken(renderer) {
+    const repliesRenderer = getCommentRepliesRenderer(renderer);
+    if (!repliesRenderer) return null;
+
+    const items = Array.isArray(repliesRenderer.contents) ? repliesRenderer.contents : [];
+    const continuationItem = items.find((item) => item?.continuationItemRenderer);
+
+    return (
+      findContinuationToken(continuationItem) ||
+      findContinuationToken(repliesRenderer.continuations) ||
+      null
+    );
+  }
+
+  function parseCommentThread(thread) {
+    const renderer = thread?.commentThreadRenderer || thread;
+    const payload = getCommentPayload(renderer?.comment || renderer?.commentViewModel || renderer);
+    if (!payload) return null;
+
+    const record = parseCommentEntity(payload);
+    if (!record) return null;
+
+    const repliesHost = payload.replies ? payload : renderer;
+
+    return {
+      ...record,
+      replies: parseReplies(repliesHost),
+      repliesContinuationToken: parseRepliesContinuationToken(repliesHost),
+    };
+  }
+
+  function collectContinuationItems(payload) {
+    const items = [];
+    const endpoints = Array.isArray(payload?.onResponseReceivedEndpoints)
+      ? payload.onResponseReceivedEndpoints
+      : [];
+
+    for (const endpoint of endpoints) {
+      for (const action of [
+        endpoint?.appendContinuationItemsAction,
+        endpoint?.reloadContinuationItemsCommand,
+      ]) {
+        if (Array.isArray(action?.continuationItems)) items.push(...action.continuationItems);
+      }
+    }
+
+    if (items.length) return items;
+
+    const contents = payload?.continuationContents;
+    const legacyItems =
+      contents?.commentSectionContinuation?.contents ||
+      contents?.commentThreadContinuation?.contents ||
+      contents?.commentRepliesContinuation?.contents;
+
+    return Array.isArray(legacyItems) ? legacyItems : items;
+  }
+
+  function parseCommentsResponse(payload) {
+    const comments = [];
+    let continuationToken = null;
+
+    for (const item of collectContinuationItems(payload)) {
+      if (item?.commentThreadRenderer) {
+        const thread = parseCommentThread(item);
+        if (thread) comments.push(thread);
+        continue;
+      }
+
+      const comment = parseCommentEntity(item);
+      if (comment) {
+        comments.push(comment);
+        continue;
+      }
+
+      continuationToken = findContinuationToken(item) || continuationToken;
+    }
+
+    return { comments, continuationToken };
+  }
+
+  function parseCommentItems(payload) {
+    return parseCommentsResponse(payload).comments;
+  }
+
   function preview(value, maxLength = 180) {
     const normalized = normalizeText(value);
     return normalized.length > maxLength
@@ -85,8 +275,12 @@
 
   return {
     buildCommentRecord,
+    findCommentsContinuationToken,
     normalizeText,
+    parseCommentItems,
+    parseCommentsResponse,
     parseCommentCountLabel,
     preview,
+    readText,
   };
 });

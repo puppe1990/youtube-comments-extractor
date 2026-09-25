@@ -59,6 +59,7 @@ function loadContentScript({
   commentsPanel,
   commentsHeader,
   quickActionButtons = [],
+  fetchImpl,
   scrollEvents,
 } = {}) {
   let listener = null;
@@ -71,6 +72,7 @@ function loadContentScript({
     Set,
     String,
     console,
+    fetch: fetchImpl,
     globalThis: null,
     location: { href: "https://www.youtube.com/watch?v=test" },
     setTimeout: timers?.setTimeout || ((callback) => {
@@ -1060,4 +1062,156 @@ test("content extraction stores the canonical video url and id", async () => {
   assert.equal(response.ok, true);
   assert.equal(response.result.videoId, "abc123");
   assert.equal(response.result.url, "https://www.youtube.com/watch?v=abc123");
+});
+
+function createApiPage(items) {
+  return {
+    onResponseReceivedEndpoints: [
+      { appendContinuationItemsAction: { continuationItems: items } },
+    ],
+  };
+}
+
+function createApiContinuationItem(token) {
+  return {
+    continuationItemRenderer: { continuationEndpoint: { continuationCommand: { token } } },
+  };
+}
+
+function createApiThreadItem({ commentId, content, author = "@canal", replies = [] }) {
+  return {
+    commentThreadRenderer: {
+      comment: {
+        commentRenderer: {
+          commentId,
+          authorText: { simpleText: author },
+          contentText: { simpleText: content },
+          replies: { commentRepliesRenderer: { contents: replies } },
+        },
+      },
+    },
+  };
+}
+
+function createApiReplyItem(commentId, content) {
+  return { commentRenderer: { commentId, contentText: { simpleText: content } } };
+}
+
+function createFetchStub(pages, requests = []) {
+  return async (_url, options) => {
+    requests.push(JSON.parse(options.body).continuation);
+    const payload = pages[requests.length - 1];
+
+    return { ok: Boolean(payload), status: payload ? 200 : 403, json: async () => payload || {} };
+  };
+}
+
+test("content extraction can load comments through the internal API", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([
+        createApiThreadItem({ commentId: "UgxApi1", content: "Primeiro" }),
+        createApiContinuationItem("PAGE_2"),
+      ]),
+      createApiPage([createApiThreadItem({ commentId: "UgxApi2", content: "Segundo" })]),
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: { client: { clientName: "WEB" } }, continuationToken: "PAGE_1" },
+      runId: "api-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(requests, ["PAGE_1", "PAGE_2"]);
+  assert.equal(response.result.mode, "api");
+  assert.equal(response.result.totalThreads, 2);
+  assert.deepEqual(
+    Array.from(response.result.data, (comment) => comment.commentId),
+    ["UgxApi1", "UgxApi2"]
+  );
+});
+
+test("content extraction loads thread replies through the API continuation", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([
+        createApiThreadItem({
+          commentId: "UgxApiTop",
+          content: "Comentario com respostas",
+          replies: [
+            createApiReplyItem("UgxApiReply1", "Resposta um"),
+            createApiContinuationItem("REPLY_PAGE"),
+          ],
+        }),
+      ]),
+      createApiPage([createApiReplyItem("UgxApiReply2", "Resposta dois")]),
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      runId: "api-replies-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(requests, ["PAGE_1", "REPLY_PAGE"]);
+  assert.equal(response.result.totalThreads, 1);
+  assert.equal(response.result.totalReplies, 2);
+  assert.deepEqual(
+    Array.from(response.result.data[0].replies, (reply) => reply.commentId),
+    ["UgxApiReply1", "UgxApiReply2"]
+  );
+  assert.equal(response.result.data[0].replies[0].parentCommentId, "UgxApiTop");
+  assert.equal(response.result.data[0].repliesContinuationToken, undefined);
+});
+
+test("content extraction falls back to the DOM when the internal API refuses", async () => {
+  const { listener, progressMessages } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    fetchImpl: createFetchStub([]),
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      maxScrollRounds: 0,
+      runId: "api-fallback-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.mode, "dom");
+  assert.equal(response.result.totalThreads, 1);
+  assert.ok(
+    progressMessages.some((message) => message.source === "api" && message.fallback === true)
+  );
+});
+
+test("content extraction falls back to the DOM when the page context is unavailable", async () => {
+  const { listener } = loadContentScript({ commentThreads: [createLoadedCommentThread()] });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { mode: "api", api: null, maxScrollRounds: 0, runId: "api-no-context-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.mode, "dom");
 });

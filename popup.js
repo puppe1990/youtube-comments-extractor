@@ -4,6 +4,7 @@ const resetButton = document.querySelector("#resetButton");
 const statusOutput = document.querySelector("#status");
 const maxScrollRoundsInput = document.querySelector("#maxScrollRounds");
 const debugPathsInput = document.querySelector("#debugPaths");
+const modeSelect = document.querySelector("#extractionMode");
 const progressEyebrow = document.querySelector("#progressEyebrow");
 const progressTitle = document.querySelector("#progressTitle");
 const progressSteps = document.querySelector("#progressSteps");
@@ -166,15 +167,22 @@ function getStageTitle(stage) {
   }[stage] || "Extraindo comentarios";
 }
 
+function getModeLabel(mode) {
+  return mode === "api" ? " (via API interna)" : "";
+}
+
 function formatExtractionSummary(visibleCommentCount, extractedCommentCount, expectedCommentCount) {
   if (!visibleCommentCount && !extractedCommentCount && !expectedCommentCount) {
     return "";
   }
 
-  const lines = [
-    `Na tela: ${visibleCommentCount || 0}`,
-    `Extraidos: ${extractedCommentCount || 0}`,
-  ];
+  const lines = [];
+
+  if (typeof visibleCommentCount === "number") {
+    lines.push(`Na tela: ${visibleCommentCount}`);
+  }
+
+  lines.push(`Extraidos: ${extractedCommentCount || 0}`);
 
   if (expectedCommentCount) {
     lines.push(`Esperados no YouTube: ${expectedCommentCount}`);
@@ -226,7 +234,7 @@ function applySavedExtractionState(state) {
       state.result.expectedCommentCount
     );
     setStatus(
-      `Coleta concluida.\nComentarios: ${state.result.totalThreads}\nRespostas: ${state.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
+      `Coleta concluida${getModeLabel(state.result.mode)}.\nComentarios: ${state.result.totalThreads}\nRespostas: ${state.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
       "success"
     );
     setExtractButton("Baixar JSON", false);
@@ -246,6 +254,28 @@ function handleProgressMessage(message) {
     return;
   }
 
+  if (message.stage === "scroll" && message.source === "api") {
+    completeStep("connect");
+    startStep("scroll", "Buscando comentarios via API");
+
+    if (message.fallback) {
+      setStatus("API interna indisponivel. Voltando para a coleta via DOM...", "working");
+      return;
+    }
+
+    const page = message.round ? `Pagina ${message.round}. ` : "";
+    commentsMetric.textContent = String(message.commentsSeen || 0);
+    setStatus(`${page}${message.commentsSeen || 0} comentarios lidos via API interna.`, "working");
+    return;
+  }
+
+  if (message.stage === "replies" && message.source === "api") {
+    completeStep("scroll");
+    startStep("replies", "Carregando respostas via API");
+    setStatus(`Respostas carregadas via API interna: ${message.repliesLoaded || 0}.`, "working");
+    return;
+  }
+
   if (message.stage === "scroll") {
     completeStep("connect");
     startStep("scroll", "Carregando comentarios");
@@ -260,6 +290,16 @@ function handleProgressMessage(message) {
       `${round}${foundLabel} comentarios principais encontrados ate agora.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount, message.expectedCommentCount)}`,
       "working"
     );
+  }
+
+  if (message.stage === "collect" && message.source === "api") {
+    completeStep("replies");
+    startStep("collect", "Organizando JSON");
+    setStatus(
+      `${message.commentsSeen || 0} comentarios recebidos da API interna. Montando o arquivo.`,
+      "working"
+    );
+    return;
   }
 
   if (message.stage === "replies") {
@@ -329,10 +369,57 @@ async function sendTabMessage(tabId, message) {
   }
 }
 
-async function sendExtractionMessage(tabId, maxScrollRounds, includeDebugPaths) {
+function getExtractionMode() {
+  return modeSelect?.value === "api" ? "api" : "dom";
+}
+
+function readPageApiContextInPage() {
+  const core = globalThis.YouTubeCommentsExtractorCore;
+  const panelSelector =
+    "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+  const sources = [
+    globalThis.ytInitialData,
+    document.querySelector("ytd-comments")?.data,
+    document.querySelector(`${panelSelector} ytd-comments`)?.data,
+  ];
+  const ytcfg = globalThis.ytcfg;
+
+  return {
+    clientName: ytcfg?.get?.("INNERTUBE_CLIENT_NAME") || null,
+    clientVersion: ytcfg?.get?.("INNERTUBE_CLIENT_VERSION") || null,
+    context: ytcfg?.get?.("INNERTUBE_CONTEXT") || null,
+    continuationToken:
+      sources.map((data) => core?.findCommentsContinuationToken?.(data) || null).find(Boolean) ||
+      null,
+  };
+}
+
+async function readPageApiContext(tabId) {
+  if (!tabId) return null;
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      files: ["src/extractor-core.js"],
+    });
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: readPageApiContextInPage,
+    });
+
+    return (Array.isArray(results) ? results[0]?.result : null) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendExtractionMessage(tabId, maxScrollRounds, includeDebugPaths, extra = {}) {
   return sendTabMessage(tabId, {
     type: "YT_COMMENTS_EXTRACT",
-    options: { maxScrollRounds, runId: currentRunId, includeDebugPaths },
+    options: { maxScrollRounds, runId: currentRunId, includeDebugPaths, ...extra },
   });
 }
 
@@ -367,6 +454,16 @@ async function restoreStateFromActiveTab() {
 
 renderSteps();
 chrome.runtime.onMessage.addListener(handleProgressMessage);
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "YT_COMMENTS_PAGE_CONTEXT") return false;
+
+  getActiveTab()
+    .then((tab) => readPageApiContext(tab?.id))
+    .then((api) => sendResponse({ ok: Boolean(api), api }))
+    .catch(() => sendResponse({ ok: false, api: null }));
+
+  return true;
+});
 resetToInitialState();
 restoreStateFromActiveTab();
 
@@ -398,7 +495,12 @@ extractButton.addEventListener("click", async () => {
 
     const maxScrollRounds = Number(maxScrollRoundsInput.value || 12);
     const includeDebugPaths = Boolean(debugPathsInput?.checked);
-    const response = await sendExtractionMessage(tab.id, maxScrollRounds, includeDebugPaths);
+    const mode = getExtractionMode();
+    const apiContext = mode === "api" ? await readPageApiContext(tab.id) : null;
+    const response = await sendExtractionMessage(tab.id, maxScrollRounds, includeDebugPaths, {
+      mode,
+      api: apiContext,
+    });
 
     if (!response?.ok) {
       throw new Error(response?.error || "Nao foi possivel extrair os comentarios.");
@@ -420,7 +522,7 @@ extractButton.addEventListener("click", async () => {
       response.result.expectedCommentCount
     );
     setStatus(
-      `JSON baixado.\nComentarios: ${response.result.totalThreads}\nRespostas: ${response.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
+      `JSON baixado${getModeLabel(response.result.mode)}.\nComentarios: ${response.result.totalThreads}\nRespostas: ${response.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
       "success"
     );
     setExtractButton("Baixar JSON", false);
