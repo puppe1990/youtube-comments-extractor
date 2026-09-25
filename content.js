@@ -38,6 +38,7 @@
   const NEXT_ENDPOINT = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
   const API_MAX_PAGES = 40;
   const API_MAX_REPLY_PAGES = 10;
+  const API_MAX_REPLY_THREADS = 200;
   const THREAD_SELECTORS = ["ytd-comment-thread-renderer", "ytm-comment-thread-renderer"];
   const TOP_COMMENT_SELECTORS = [
     "#comment ytd-comment-view-model",
@@ -377,6 +378,8 @@
 
         try {
           const repliesBefore = getVisibleReplyNodes(thread, topNode).length;
+          button.scrollIntoView?.({ block: "center", behavior: "instant" });
+          await wait(150);
           button.click();
           buttonsClicked++;
           const repliesAfter = await waitForReplyChange(thread, topNode, repliesBefore);
@@ -728,6 +731,26 @@
     }
   }
 
+  function describeReplyControls(thread) {
+    const controls = [];
+    const seen = new Set();
+
+    for (const selector of ["button", "[role='button']", "tp-yt-paper-button"]) {
+      for (const node of qsa(thread, selector)) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+
+        controls.push({
+          tag: node.tagName?.toLowerCase?.() || null,
+          id: node.id || null,
+          label: normalizeLabel(node.getAttribute?.("aria-label") || text(node)).slice(0, 90),
+        });
+      }
+    }
+
+    return controls.slice(0, 15);
+  }
+
   function collect(threads = getCommentThreads(), includeDebugPaths = false) {
     const data = threads.map((thread, index) => {
       const topNode = getTopCommentNode(thread);
@@ -742,7 +765,13 @@
         parseCommentNode(replyNode, null, includeDebugPaths)
       );
 
-      return core.buildCommentRecord(topComment, replies, index);
+      const record = core.buildCommentRecord(topComment, replies, index);
+
+      if (includeDebugPaths) {
+        record.debugReplyControls = describeReplyControls(thread);
+      }
+
+      return record;
     });
 
     return {
@@ -800,12 +829,13 @@
     return refreshed?.continuationToken && refreshed?.context ? refreshed : null;
   }
 
-  async function loadApiComments(api, runId, token) {
+  async function loadApiComments(api, runId, token, maxPages = API_MAX_PAGES) {
     const comments = [];
     const seenCommentIds = new Set();
     let continuation = api.continuationToken;
+    let truncated = false;
 
-    for (let page = 0; page < API_MAX_PAGES && continuation; page++) {
+    for (let page = 0; page < maxPages && continuation; page++) {
       ensureActiveRun(token);
       const parsed = core.parseCommentsResponse(await fetchInnertubeNext(api, continuation));
 
@@ -820,29 +850,43 @@
       }
 
       continuation = parsed.continuationToken;
+      truncated = Boolean(continuation) && page + 1 >= maxPages;
       reportProgress("scroll", {
         runId,
         source: "api",
         round: page + 1,
-        maxRounds: API_MAX_PAGES,
+        maxRounds: maxPages,
         commentsSeen: comments.length,
         expectedCommentCount: getExpectedCommentCount(),
       });
     }
 
-    return comments;
+    return { comments, truncated };
+  }
+
+  function getPageChannelId() {
+    return document.querySelector('meta[itemprop="channelId"]')?.content || null;
+  }
+
+  function getThreadRepliesToken(api, comment) {
+    if (comment.repliesContinuationToken) {
+      return { token: comment.repliesContinuationToken, source: "server" };
+    }
+
+    return {
+      token: core.buildRepliesContinuationToken({
+        videoId: getVideoIdFromUrl(location.href),
+        commentId: comment.commentId,
+        channelId: api.videoChannelId || getPageChannelId(),
+      }),
+      source: "built",
+    };
   }
 
   async function loadThreadReplies(api, comment) {
-    const continuation =
-      comment.repliesContinuationToken ||
-      core.buildRepliesContinuationToken({
-        videoId: getVideoIdFromUrl(location.href),
-        commentId: comment.commentId,
-        channelId: api.videoChannelId,
-      });
+    const { token: continuation } = getThreadRepliesToken(api, comment);
 
-    if (!continuation) return 0;
+    if (!continuation) return { loaded: 0, truncated: false };
 
     const seenReplyIds = new Set(comment.replies.map((reply) => reply.commentId).filter(Boolean));
     let loaded = 0;
@@ -861,23 +905,55 @@
       next = parsed.continuationToken;
     }
 
-    return loaded;
+    return { loaded, truncated: Boolean(next) };
   }
 
-  async function loadApiReplies(api, comments, runId, token) {
+  function hasThreadReplies(comment) {
+    if (comment.repliesContinuationToken) return true;
+    if (typeof comment.replyCount === "number") return comment.replyCount > 0;
+
+    return true;
+  }
+
+  async function loadApiReplies(api, comments, runId, token, maxThreads = API_MAX_REPLY_THREADS) {
+    const stats = {
+      serverTokens: 0,
+      builtTokens: 0,
+      withoutToken: 0,
+      failedThreads: 0,
+      attemptedThreads: 0,
+    };
     let repliesLoaded = 0;
-    let failedThreads = 0;
+    let truncated = false;
 
     for (const comment of comments) {
       ensureActiveRun(token);
-      if (!comment.commentId) continue;
+      if (!comment.commentId || !hasThreadReplies(comment)) continue;
+
+      if (stats.attemptedThreads >= maxThreads) {
+        truncated = true;
+        break;
+      }
+
+      const { token: repliesToken, source } = getThreadRepliesToken(api, comment);
+
+      if (!repliesToken) {
+        stats.withoutToken++;
+        continue;
+      }
+
+      stats.attemptedThreads++;
+      stats[source === "server" ? "serverTokens" : "builtTokens"]++;
 
       try {
-        repliesLoaded += await loadThreadReplies(api, comment);
+        const threadReplies = await loadThreadReplies(api, comment);
+
+        repliesLoaded += threadReplies.loaded;
+        truncated = truncated || threadReplies.truncated;
       } catch (error) {
         if (token !== extractionState.activeToken) throw error;
 
-        failedThreads++;
+        stats.failedThreads++;
         console.warn(
           "[YT Comments Extractor] Falha ao carregar as respostas de um comentario.",
           error
@@ -890,13 +966,13 @@
         pass: 1,
         maxPasses: 1,
         repliesLoaded,
-        failedThreads,
+        failedThreads: stats.failedThreads,
         visibleCommentCount: comments.length + repliesLoaded,
         expectedCommentCount: getExpectedCommentCount(),
       });
     }
 
-    return repliesLoaded;
+    return { repliesLoaded, truncated, stats };
   }
 
   function toCommentRecord(comment) {
@@ -910,7 +986,7 @@
     };
   }
 
-  function collectFromApiComments(comments) {
+  function collectFromApiComments(comments, { truncated = false, debug = null } = {}) {
     const data = comments.map((comment, index) =>
       core.buildCommentRecord(
         toCommentRecord(comment),
@@ -923,6 +999,8 @@
       ...getVideoMeta(),
       collectedAt: new Date().toISOString(),
       mode: "api",
+      truncated,
+      ...(debug ? { debugApi: debug } : {}),
       totalThreads: data.length,
       totalReplies: data.reduce((sum, comment) => sum + comment.repliesCount, 0),
       visibleCommentCount: null,
@@ -931,23 +1009,35 @@
     };
   }
 
-  async function tryApiExtraction(api, runId, token) {
+  async function tryApiExtraction(api, options, runId, token) {
     try {
       const context = await resolveApiContext(api, token);
       if (!context) return null;
 
-      const comments = await loadApiComments(context, runId, token);
-      if (!comments.length) return null;
+      const maxPages = Number(options.maxApiPages ?? API_MAX_PAGES);
+      const maxReplyThreads = Number(options.maxReplyThreads ?? API_MAX_REPLY_THREADS);
+      const pages = await loadApiComments(context, runId, token, maxPages);
+      if (!pages.comments.length) return null;
 
-      await loadApiReplies(context, comments, runId, token);
+      const replies = await loadApiReplies(context, pages.comments, runId, token, maxReplyThreads);
       reportProgress("collect", {
         runId,
         source: "api",
-        commentsSeen: comments.length,
+        commentsSeen: pages.comments.length,
         expectedCommentCount: getExpectedCommentCount(),
       });
 
-      return collectFromApiComments(comments);
+      return collectFromApiComments(pages.comments, {
+        truncated: pages.truncated || replies.truncated,
+        debug: options.includeDebugPaths
+          ? {
+              videoChannelId: context.videoChannelId || getPageChannelId(),
+              clientVersion: context.clientVersion || null,
+              ...replies.stats,
+              repliesLoaded: replies.repliesLoaded,
+            }
+          : null,
+      });
     } catch (error) {
       if (token !== extractionState.activeToken) throw error;
 
@@ -1016,7 +1106,7 @@
     extractionState.error = null;
 
     const apiResult =
-      options.mode === "api" ? await tryApiExtraction(options.api || null, runId, token) : null;
+      options.mode === "api" ? await tryApiExtraction(options.api || null, options, runId, token) : null;
     const result =
       apiResult || (await runDomExtraction(maxScrollRounds, includeDebugPaths, runId, token));
 

@@ -158,6 +158,9 @@
         content: readText(properties.content),
         published: properties.publishedTime || "",
         likes: readText(entity.toolbar?.likeCountNotliked) || "0",
+        replyCount: parseCommentCountLabel(
+          entity.toolbar?.replyCount || entity.toolbar?.replyCountA11y || ""
+        ),
       };
 
       if (entity.key) entities.set(entity.key, record);
@@ -193,6 +196,7 @@
       content,
       published: stored?.published || readText(payload.publishedTimeText),
       likes: stored?.likes || readText(payload.voteCount) || readText(payload.likeCount) || "0",
+      replyCount: stored?.replyCount ?? null,
     };
   }
 

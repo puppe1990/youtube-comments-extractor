@@ -167,6 +167,10 @@ function getStageTitle(stage) {
   }[stage] || "Extraindo comentarios";
 }
 
+function getTruncatedLabel(result) {
+  return result?.truncated ? "\nParcial: o limite de paginas foi atingido." : "";
+}
+
 function getModeLabel(mode) {
   return mode === "api" ? " (via API interna)" : " (via crawler DOM)";
 }
@@ -234,7 +238,7 @@ function applySavedExtractionState(state) {
       state.result.expectedCommentCount
     );
     setStatus(
-      `Coleta concluida${getModeLabel(state.result.mode)}.\nComentarios: ${state.result.totalThreads}\nRespostas: ${state.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
+      `Coleta concluida${getModeLabel(state.result.mode)}.\nComentarios: ${state.result.totalThreads}\nRespostas: ${state.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}${getTruncatedLabel(state.result)}`,
       "success"
     );
     setExtractButton("Baixar JSON", false);
@@ -532,7 +536,7 @@ extractButton.addEventListener("click", async () => {
       response.result.expectedCommentCount
     );
     setStatus(
-      `JSON baixado${getModeLabel(response.result.mode)}.\nComentarios: ${response.result.totalThreads}\nRespostas: ${response.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
+      `JSON baixado${getModeLabel(response.result.mode)}.\nComentarios: ${response.result.totalThreads}\nRespostas: ${response.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}${getTruncatedLabel(response.result)}`,
       "success"
     );
     setExtractButton("Baixar JSON", false);

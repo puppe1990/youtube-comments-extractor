@@ -63,6 +63,7 @@ function loadContentScript({
   commentsRoot,
   commentsPanel,
   commentsHeader,
+  pageChannelId,
   quickActionButtons = [],
   fetchImpl,
   scrollEvents,
@@ -107,6 +108,9 @@ function loadContentScript({
           return commentsPanel;
         }
         if (selector === "ytd-comments-header-renderer") return commentsHeader;
+        if (selector === 'meta[itemprop="channelId"]') {
+          return pageChannelId ? createElement({ content: pageChannelId }) : null;
+        }
         return null;
       },
       querySelectorAll(selector) {
@@ -869,6 +873,79 @@ test("content extraction finds replies rendered outside the replies container", 
   assert.equal(response.result.data[0].replies[0].parentCommentId, "UgxTopDirect");
 });
 
+test("content extraction scrolls the reply control into view before clicking", async () => {
+  const events = [];
+  let label = "Ver 1 resposta";
+  const replyButton = createElement({
+    isMoreRepliesButton: true,
+    getAttribute(name) {
+      return name === "aria-label" ? label : null;
+    },
+    scrollIntoView() {
+      events.push("scroll");
+    },
+    click() {
+      events.push("click");
+      label = "Ocultar respostas";
+    },
+  });
+
+  Object.defineProperty(replyButton, "innerText", { get: () => label });
+
+  const { listener } = loadContentScript({
+    commentThreads: [createCommentThreadWithButtons([replyButton])],
+  });
+
+  await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "scroll-before-click-run" },
+  });
+
+  assert.deepEqual(events, ["scroll", "click"]);
+});
+
+test("content extraction lists the reply controls when debug paths are on", async () => {
+  const replyButton = createElement({
+    tagName: "BUTTON",
+    id: "more-replies",
+    innerText: "Ver 1 resposta",
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 1 resposta" : null;
+    },
+  });
+  const thread = createElement({
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "ytd-comment-thread-renderer") return [];
+      if (selector === "button") return [replyButton];
+      return [];
+    },
+  });
+
+  const withDebug = loadContentScript({ commentThreads: [thread] });
+  const debugResponse = await sendContentMessage(withDebug.listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "debug-controls-run", includeDebugPaths: true },
+  });
+
+  const controls = debugResponse.result.data[0].debugReplyControls;
+
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].tag, "button");
+  assert.equal(controls[0].id, "more-replies");
+  assert.equal(controls[0].label, "ver 1 resposta");
+
+  const withoutDebug = loadContentScript({ commentThreads: [thread] });
+  const plainResponse = await sendContentMessage(withoutDebug.listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "plain-controls-run" },
+  });
+
+  assert.equal("debugReplyControls" in plainResponse.result.data[0], false);
+});
+
 test("content extraction only counts reply expansion when visible replies increase", async () => {
   let expanded = false;
   const topNode = createElement({ hidden: false });
@@ -1546,6 +1623,206 @@ test("content extraction builds the replies token when the API does not provide 
       channelId: "UCowner",
     })
   );
+});
+
+function createDecoratedPage({ key, commentId, content, author = "@canal", replyCountA11y = "" }) {
+  return {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            { commentThreadRenderer: { commentViewModel: { commentViewModel: { commentKey: key } } } },
+          ],
+        },
+      },
+    ],
+    frameworkUpdates: {
+      entityBatchUpdate: {
+        mutations: [
+          {
+            entityKey: key,
+            payload: {
+              commentEntityPayload: {
+                key,
+                properties: { commentId, content: { content } },
+                author: { displayName: author },
+                toolbar: { replyCount: "", replyCountA11y },
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+test("content extraction skips reply requests for threads without replies", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [createDecoratedPage({ key: "NO_REPLY_KEY", commentId: "UgxNoReplies", content: "Sem respostas", replyCountA11y: "0 resposta" })],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1", videoChannelId: "UCowner" },
+      runId: "no-replies-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 1);
+  assert.equal(response.result.totalReplies, 0);
+  assert.deepEqual(requests, ["PAGE_1"]);
+});
+
+test("content extraction flags a truncated result when the reply limit is reached", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([
+        createApiThreadItem({
+          commentId: "UgxFirst",
+          content: "Primeiro",
+          replies: [createApiContinuationItem("REPLY_FIRST")],
+        }),
+        createApiThreadItem({
+          commentId: "UgxSecond",
+          content: "Segundo",
+          replies: [createApiContinuationItem("REPLY_SECOND")],
+        }),
+      ]),
+      createApiPage([createApiReplyItem("UgxFirstReply", "Resposta do primeiro")]),
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      maxReplyThreads: 1,
+      runId: "truncated-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.truncated, true);
+  assert.deepEqual(requests, ["PAGE_1", "REPLY_FIRST"]);
+});
+
+test("content extraction flags a truncated thread when its replies keep going", async () => {
+  const requests = [];
+  const replyPages = [];
+
+  for (let page = 0; page < 12; page++) {
+    replyPages.push(
+      createApiPage([
+        createApiReplyItem(`UgxDeepReply${page}`, `Resposta profunda ${page}`),
+        createApiContinuationItem(`DEEP_${page + 1}`),
+      ])
+    );
+  }
+
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([
+        createApiThreadItem({
+          commentId: "UgxDeepThread",
+          content: "Thread com muitas respostas",
+          replies: [createApiContinuationItem("DEEP_1")],
+        }),
+      ]),
+      ...replyPages,
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      runId: "deep-thread-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.truncated, true);
+  assert.equal(response.result.totalReplies, 10);
+  assert.equal(requests.length, 11);
+});
+
+test("content extraction falls back to the page channel meta for the replies token", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([createApiThreadItem({ commentId: "UgxMetaChannel", content: "Sem canal no bridge" })]),
+      createApiPage([createApiReplyItem("UgxMetaReply", "Resposta via canal do meta")]),
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({
+    commentThreads: [],
+    fetchImpl,
+    pageChannelId: "UCfromMetaTag",
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      runId: "page-channel-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalReplies, 1);
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[1],
+    core.buildRepliesContinuationToken({
+      videoId: "test",
+      commentId: "UgxMetaChannel",
+      channelId: "UCfromMetaTag",
+    })
+  );
+});
+
+test("content extraction reports the API diagnostics when debug paths are on", async () => {
+  const fetchImpl = createFetchStub([
+    createApiPage([createApiThreadItem({ commentId: "UgxDebugApi", content: "Com debug" })]),
+    createApiPage([createApiReplyItem("UgxDebugReply", "Resposta do debug")]),
+  ]);
+  const { listener } = loadContentScript({
+    commentThreads: [],
+    fetchImpl,
+    pageChannelId: "UCdebugMeta",
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      runId: "api-debug-run",
+      includeDebugPaths: true,
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.debugApi.videoChannelId, "UCdebugMeta");
+  assert.equal(response.result.debugApi.attemptedThreads, 1);
+  assert.equal(response.result.debugApi.builtTokens, 1);
+  assert.equal(response.result.debugApi.withoutToken, 0);
+  assert.equal(response.result.debugApi.failedThreads, 0);
 });
 
 test("content extraction falls back to the DOM when the comments token is a replies token", async () => {
