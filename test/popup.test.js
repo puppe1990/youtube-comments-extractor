@@ -53,6 +53,7 @@ function createPopupHarness({ initialStatus, apiContext } = {}) {
   const runtimeListeners = [];
   const sentMessages = [];
   const scriptingCalls = [];
+  const createdElements = [];
 
   const sandbox = {
     Blob: class Blob {
@@ -81,7 +82,9 @@ function createPopupHarness({ initialStatus, apiContext } = {}) {
         return nodes[selector] || null;
       },
       createElement() {
-        return createNode();
+        const node = createNode();
+        createdElements.push(node);
+        return node;
       },
     },
     chrome: {
@@ -123,6 +126,7 @@ function createPopupHarness({ initialStatus, apiContext } = {}) {
     runtimeListeners,
     sandbox,
     scriptingCalls,
+    createdElements,
     async settle() {
       if (typeof sandbox.restoreStateFromActiveTab === "function") {
         await sandbox.restoreStateFromActiveTab();
@@ -236,4 +240,17 @@ test("popup reads the page context and forwards the API mode", async () => {
     ["MAIN", "MAIN"]
   );
   assert.deepEqual(Array.from(scriptingCalls[0].files), ["src/extractor-core.js"]);
+});
+
+test("popup marks the extraction method in the downloaded file name", async () => {
+  const { sandbox, createdElements } = createPopupHarness();
+
+  sandbox.downloadJson({ title: "Você Pagaria por Esse SaaS?", mode: "api" });
+  sandbox.downloadJson({ title: "Você Pagaria por Esse SaaS?", mode: "crawler" });
+
+  const fileNames = createdElements.map((node) => node.download).filter(Boolean);
+
+  assert.equal(fileNames.length, 2);
+  assert.match(fileNames[0], /^voce-pagaria-por-esse-saas-api-\d+\.json$/);
+  assert.match(fileNames[1], /^voce-pagaria-por-esse-saas-crawler-\d+\.json$/);
 });
