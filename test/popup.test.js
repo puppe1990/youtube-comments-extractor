@@ -269,3 +269,19 @@ test("popup marks the extraction method in the downloaded file name", async () =
   assert.match(fileNames[0], /^voce-pagaria-por-esse-saas-api-\d+\.json$/);
   assert.match(fileNames[1], /^voce-pagaria-por-esse-saas-crawler-\d+\.json$/);
 });
+
+test("popup warns when the API result was truncated", async () => {
+  const { nodes, sandbox } = createPopupHarness();
+
+  sandbox.applySavedExtractionState({
+    phase: "complete",
+    runId: "run-truncated",
+    stage: "complete",
+    commentsSeen: 40,
+    visibleCommentCount: null,
+    result: { mode: "api", totalThreads: 40, totalReplies: 3, truncated: true },
+    error: null,
+  });
+
+  assert.match(nodes["#status"].textContent, /Parcial/);
+});

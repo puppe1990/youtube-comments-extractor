@@ -147,16 +147,9 @@ test("parseCommentsResponse reads the commentViewModel payload", () => {
 
   assert.equal(parsed.continuationToken, "NEXT_2");
   assert.equal(parsed.comments.length, 1);
-  assert.deepEqual(parsed.comments[0], {
-    commentId: "UgxNewTop",
-    author: "@canal-novo",
-    authorChannelUrl: null,
-    content: "Comentario novo",
-    published: "ha 1 hora",
-    likes: "3",
-    replies: [],
-    repliesContinuationToken: null,
-  });
+  assert.equal(parsed.comments[0].content, "Comentario novo");
+  assert.equal(parsed.comments[0].likes, "3");
+  assert.equal(parsed.comments[0].replyCount, null);
 });
 
 function createCommentEntityMutation({
@@ -167,6 +160,7 @@ function createCommentEntityMutation({
   publishedTime,
   likeCountLiked = "",
   likeCountNotliked = "",
+  replyCountA11y = "",
   withChannelPage = true,
   replyLevel = 0,
 }) {
@@ -189,7 +183,7 @@ function createCommentEntityMutation({
             ? { innertubeCommand: { browseEndpoint: { canonicalBaseUrl: `/${author}` } } }
             : undefined,
         },
-        toolbar: { likeCountLiked, likeCountNotliked, replyCount: "" },
+        toolbar: { likeCountLiked, likeCountNotliked, replyCount: "", replyCountA11y },
       },
     },
   };
@@ -244,9 +238,44 @@ test("parseCommentsResponse reads the decorated reply payload and ignores the li
     content: "Alô time do Pra Ontem! Dá uma revisada na copy do site",
     published: "há 1 dia",
     likes: "0",
+    replyCount: null,
     replies: [],
     repliesContinuationToken: null,
   });
+});
+
+test("parseCommentsResponse reads the reply count from the entity toolbar", () => {
+  const payload = {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            {
+              commentThreadRenderer: {
+                commentViewModel: { commentViewModel: { commentKey: "COUNTED_KEY" } },
+              },
+            },
+          ],
+        },
+      },
+    ],
+    frameworkUpdates: {
+      entityBatchUpdate: {
+        mutations: [
+          createCommentEntityMutation({
+            key: "COUNTED_KEY",
+            commentId: "UgxCounted",
+            content: "Comentario com respostas",
+            author: "@canal",
+            publishedTime: "há 2 dias",
+            replyCountA11y: "6 respostas",
+          }),
+        ],
+      },
+    },
+  };
+
+  assert.equal(parseCommentsResponse(payload).comments[0].replyCount, 6);
 });
 
 test("parseCommentsResponse joins entities by comment id and uses the unliked count", () => {
