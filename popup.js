@@ -168,7 +168,7 @@ function getStageTitle(stage) {
 }
 
 function getModeLabel(mode) {
-  return mode === "api" ? " (via API interna)" : "";
+  return mode === "api" ? " (via API interna)" : " (via crawler DOM)";
 }
 
 function formatExtractionSummary(visibleCommentCount, extractedCommentCount, expectedCommentCount) {
@@ -341,7 +341,7 @@ function downloadJson(result) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${safeFileName(result.title)}-${Date.now()}.json`;
+  anchor.download = `${safeFileName(result.title)}-${result.mode || "json"}-${Date.now()}.json`;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();

@@ -558,6 +558,12 @@
     await wait(900);
   }
 
+  function getStableRoundsLimit(expectedCommentCount, loadedCount) {
+    if (!expectedCommentCount || loadedCount >= expectedCommentCount) return 2;
+
+    return 5;
+  }
+
   async function autoScrollComments(maxRounds = 12, runId = null, token = extractionState.activeToken) {
     ensureActiveRun(token);
     await moveToCommentsSection();
@@ -602,8 +608,8 @@
         expectedCommentCount,
       });
 
-      if (stableRounds >= 2) break;
       if (expectedCommentCount && count >= expectedCommentCount) break;
+      if (stableRounds >= getStableRoundsLimit(expectedCommentCount, count)) break;
     }
 
     ensureActiveRun(token);
@@ -665,7 +671,7 @@
     return {
       ...getVideoMeta(),
       collectedAt: new Date().toISOString(),
-      mode: "dom",
+      mode: "crawler",
       totalThreads: data.length,
       totalReplies: data.reduce((sum, comment) => sum + comment.repliesCount, 0),
       visibleCommentCount: countVisibleComments(threads),

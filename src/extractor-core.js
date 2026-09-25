@@ -126,24 +126,63 @@
     );
   }
 
-  function parseCommentEntity(entity) {
+  function readCommentEntities(payload) {
+    const mutations = payload?.frameworkUpdates?.entityBatchUpdate?.mutations;
+    const entities = new Map();
+    if (!Array.isArray(mutations)) return entities;
+
+    for (const mutation of mutations) {
+      const entity = mutation?.payload?.commentEntityPayload;
+      if (!entity) continue;
+
+      const properties = entity.properties || {};
+      const record = {
+        commentId: properties.commentId || null,
+        author: entity.author?.displayName || readText(entity.author?.name),
+        authorChannelUrl:
+          entity.author?.channelPageEndpoint?.innertubeCommand?.browseEndpoint?.canonicalBaseUrl ||
+          null,
+        content: readText(properties.content),
+        published: properties.publishedTime || "",
+        likes:
+          readText(entity.toolbar?.likeCountLiked) ||
+          readText(entity.toolbar?.likeCountNotliked) ||
+          "0",
+      };
+
+      if (entity.key) entities.set(entity.key, record);
+      if (record.commentId) entities.set(record.commentId, record);
+    }
+
+    return entities;
+  }
+
+  function findCommentEntity(payload, entities) {
+    if (!payload || !entities?.size) return null;
+
+    return entities.get(payload.commentKey) || entities.get(payload.commentId) || null;
+  }
+
+  function parseCommentEntity(entity, entities) {
     const payload = getCommentPayload(entity);
     if (!payload) return null;
 
-    const content = readText(payload.contentText) || readText(payload.content);
-    const commentId = payload.commentId || payload.commentKey || null;
+    const stored = findCommentEntity(payload, entities);
+    const content = stored?.content || readText(payload.contentText) || readText(payload.content);
+    const commentId = payload.commentId || stored?.commentId || payload.commentKey || null;
     if (!commentId && !content) return null;
 
     return {
       commentId,
-      author: readText(payload.authorText) || readText(payload.authorName),
+      author: stored?.author || readText(payload.authorText) || readText(payload.authorName),
       authorChannelUrl:
+        stored?.authorChannelUrl ||
         payload.authorEndpoint?.browseEndpoint?.canonicalBaseUrl ||
         payload.authorEndpoint?.commandMetadata?.webCommandMetadata?.url ||
         null,
       content,
-      published: readText(payload.publishedTimeText),
-      likes: readText(payload.voteCount) || readText(payload.likeCount) || "0",
+      published: stored?.published || readText(payload.publishedTimeText),
+      likes: stored?.likes || readText(payload.voteCount) || readText(payload.likeCount) || "0",
     };
   }
 
@@ -151,11 +190,11 @@
     return renderer?.replies?.commentRepliesRenderer || null;
   }
 
-  function parseReplies(renderer) {
+  function parseReplies(renderer, entities) {
     const items = getCommentRepliesRenderer(renderer)?.contents;
     if (!Array.isArray(items)) return [];
 
-    return items.map((item) => parseCommentEntity(item)).filter(Boolean);
+    return items.map((item) => parseCommentEntity(item, entities)).filter(Boolean);
   }
 
   function parseRepliesContinuationToken(renderer) {
@@ -172,19 +211,19 @@
     );
   }
 
-  function parseCommentThread(thread) {
+  function parseCommentThread(thread, entities) {
     const renderer = thread?.commentThreadRenderer || thread;
     const payload = getCommentPayload(renderer?.comment || renderer?.commentViewModel || renderer);
     if (!payload) return null;
 
-    const record = parseCommentEntity(payload);
+    const record = parseCommentEntity(payload, entities);
     if (!record) return null;
 
     const repliesHost = payload.replies ? payload : renderer;
 
     return {
       ...record,
-      replies: parseReplies(repliesHost),
+      replies: parseReplies(repliesHost, entities),
       repliesContinuationToken: parseRepliesContinuationToken(repliesHost),
     };
   }
@@ -217,16 +256,17 @@
 
   function parseCommentsResponse(payload) {
     const comments = [];
+    const entities = readCommentEntities(payload);
     let continuationToken = null;
 
     for (const item of collectContinuationItems(payload)) {
       if (item?.commentThreadRenderer) {
-        const thread = parseCommentThread(item);
+        const thread = parseCommentThread(item, entities);
         if (thread) comments.push(thread);
         continue;
       }
 
-      const comment = parseCommentEntity(item);
+      const comment = parseCommentEntity(item, entities);
       if (comment) {
         comments.push(comment);
         continue;

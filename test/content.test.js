@@ -1026,6 +1026,41 @@ test("content extraction keeps a single entry when the same thread is rendered t
   assert.equal(response.result.data[0].commentId, "UgwDuplicated");
 });
 
+test("content extraction keeps scrolling while the loaded comments are below the reported total", async () => {
+  const commentsHeader = createElement({
+    querySelector(selector) {
+      if (selector === "#count") return createElement({ innerText: "13" });
+      return null;
+    },
+  });
+  const scrollsWithTotal = [];
+  const scrollsWithoutTotal = [];
+
+  const withExpectedCount = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    commentsHeader,
+    scrollEvents: scrollsWithTotal,
+  });
+  await sendContentMessage(withExpectedCount.listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 10, runId: "below-total-run" },
+  });
+
+  const withoutExpectedCount = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    scrollEvents: scrollsWithoutTotal,
+  });
+  await sendContentMessage(withoutExpectedCount.listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 10, runId: "no-total-run" },
+  });
+
+  const countScrolls = (events) => events.filter((event) => event === "end-scroll").length;
+
+  assert.equal(countScrolls(scrollsWithTotal), 9);
+  assert.equal(countScrolls(scrollsWithoutTotal), 6);
+});
+
 test("content extraction reports the comment count shown by YouTube", async () => {
   const commentsHeader = createElement({
     querySelector(selector) {
@@ -1180,6 +1215,89 @@ test("content extraction loads thread replies through the API continuation", asy
   assert.equal(response.result.data[0].repliesContinuationToken, undefined);
 });
 
+test("content extraction reads decorated replies from the API entity batch", async () => {
+  const requests = [];
+  const decoratedReplyPage = {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            {
+              commentThreadRenderer: {
+                commentViewModel: {
+                  commentViewModel: {
+                    commentKey: "REPLY_ENTITY_KEY",
+                    commentId: "UgxDecoratedReply",
+                  },
+                },
+              },
+            },
+          ],
+          targetId: "comment-replies-item-UgxApiTop",
+        },
+      },
+    ],
+    frameworkUpdates: {
+      entityBatchUpdate: {
+        mutations: [
+          {
+            entityKey: "REPLY_ENTITY_KEY",
+            payload: {
+              commentEntityPayload: {
+                key: "REPLY_ENTITY_KEY",
+                properties: {
+                  commentId: "UgxDecoratedReply",
+                  content: { content: "Resposta decorada" },
+                  publishedTime: "ha 1 dia",
+                  replyLevel: 1,
+                },
+                author: { displayName: "@decorado" },
+                toolbar: { likeCountLiked: " ", likeCountNotliked: "2" },
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([
+        createApiThreadItem({
+          commentId: "UgxApiTop",
+          content: "Comentario com resposta decorada",
+          replies: [createApiContinuationItem("REPLY_PAGE")],
+        }),
+      ]),
+      decoratedReplyPage,
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      runId: "decorated-replies-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(requests, ["PAGE_1", "REPLY_PAGE"]);
+  assert.equal(response.result.totalReplies, 1);
+
+  const reply = response.result.data[0].replies[0];
+  assert.equal(reply.commentId, "UgxDecoratedReply");
+  assert.equal(reply.author, "@decorado");
+  assert.equal(reply.content, "Resposta decorada");
+  assert.equal(reply.likes, "2");
+  assert.equal(reply.parentCommentId, "UgxApiTop");
+  assert.equal("replies" in reply, false);
+  assert.equal("repliesContinuationToken" in reply, false);
+});
+
 test("content extraction falls back to the DOM when the internal API refuses", async () => {
   const { listener, progressMessages } = loadContentScript({
     commentThreads: [createLoadedCommentThread()],
@@ -1197,7 +1315,7 @@ test("content extraction falls back to the DOM when the internal API refuses", a
   });
 
   assert.equal(response.ok, true);
-  assert.equal(response.result.mode, "dom");
+  assert.equal(response.result.mode, "crawler");
   assert.equal(response.result.totalThreads, 1);
   assert.ok(
     progressMessages.some((message) => message.source === "api" && message.fallback === true)
@@ -1213,5 +1331,5 @@ test("content extraction falls back to the DOM when the page context is unavaila
   });
 
   assert.equal(response.ok, true);
-  assert.equal(response.result.mode, "dom");
+  assert.equal(response.result.mode, "crawler");
 });

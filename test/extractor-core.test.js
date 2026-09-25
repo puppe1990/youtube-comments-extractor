@@ -107,6 +107,136 @@ test("parseCommentsResponse reads the commentViewModel payload", () => {
   });
 });
 
+function createCommentEntityMutation({
+  key,
+  commentId,
+  content,
+  author,
+  publishedTime,
+  likeCountLiked = "",
+  likeCountNotliked = "",
+  replyLevel = 0,
+}) {
+  return {
+    entityKey: key,
+    payload: {
+      commentEntityPayload: {
+        key,
+        properties: {
+          commentId,
+          content: { content },
+          publishedTime,
+          replyLevel,
+          authorButtonA11y: author,
+        },
+        author: {
+          channelId: "UCRwobVXDIVicbFa26zl0A5g",
+          displayName: author,
+          channelPageEndpoint: {
+            innertubeCommand: { browseEndpoint: { canonicalBaseUrl: `/${author}` } },
+          },
+        },
+        toolbar: { likeCountLiked, likeCountNotliked, replyCount: "" },
+      },
+    },
+  };
+}
+
+test("parseCommentsResponse reads the decorated reply payload from frameworkUpdates", () => {
+  const payload = {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            {
+              commentThreadRenderer: {
+                commentViewModel: {
+                  commentViewModel: {
+                    commentKey: "ENTITY_REPLY_KEY",
+                    commentId: "Ugz_AFW8y4AkRcb9hn94AaABAg.Ab7Ig6mV9BuAb8JQ4NPuUZ",
+                  },
+                },
+              },
+            },
+          ],
+          targetId: "comment-replies-item-Ugz_AFW8y4AkRcb9hn94AaABAg",
+        },
+      },
+    ],
+    frameworkUpdates: {
+      entityBatchUpdate: {
+        mutations: [
+          createCommentEntityMutation({
+            key: "ENTITY_REPLY_KEY",
+            commentId: "Ugz_AFW8y4AkRcb9hn94AaABAg.Ab7Ig6mV9BuAb8JQ4NPuUZ",
+            content: "Alô time do Pra Ontem! Dá uma revisada na copy do site",
+            author: "@projetosaas",
+            publishedTime: "há 1 dia",
+            likeCountLiked: "1",
+            likeCountNotliked: " ",
+            replyLevel: 1,
+          }),
+        ],
+      },
+    },
+  };
+
+  const parsed = parseCommentsResponse(payload);
+
+  assert.equal(parsed.comments.length, 1);
+  assert.deepEqual(parsed.comments[0], {
+    commentId: "Ugz_AFW8y4AkRcb9hn94AaABAg.Ab7Ig6mV9BuAb8JQ4NPuUZ",
+    author: "@projetosaas",
+    authorChannelUrl: "/@projetosaas",
+    content: "Alô time do Pra Ontem! Dá uma revisada na copy do site",
+    published: "há 1 dia",
+    likes: "1",
+    replies: [],
+    repliesContinuationToken: null,
+  });
+});
+
+test("parseCommentsResponse joins entities by comment id and uses the unliked count", () => {
+  const payload = {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            {
+              commentThreadRenderer: {
+                commentViewModel: {
+                  commentViewModel: { commentId: "UgxDecoratedTop" },
+                },
+              },
+            },
+          ],
+        },
+      },
+    ],
+    frameworkUpdates: {
+      entityBatchUpdate: {
+        mutations: [
+          createCommentEntityMutation({
+            key: "ENTITY_TOP_KEY",
+            commentId: "UgxDecoratedTop",
+            content: "Comentario decorado",
+            author: "@canal",
+            publishedTime: "há 2 dias",
+            likeCountLiked: " ",
+            likeCountNotliked: "5",
+          }),
+        ],
+      },
+    },
+  };
+
+  const parsed = parseCommentsResponse(payload);
+
+  assert.equal(parsed.comments[0].content, "Comentario decorado");
+  assert.equal(parsed.comments[0].likes, "5");
+  assert.equal(parsed.comments[0].author, "@canal");
+});
+
 test("parseCommentItems handles reply pages and the legacy continuation shape", () => {
   const replyPage = createNextPage([
     {

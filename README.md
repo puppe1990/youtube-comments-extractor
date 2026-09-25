@@ -18,7 +18,9 @@ Extensao Chrome Manifest V3 para carregar comentarios de um video do YouTube, ex
 
 ## Formato do JSON
 
-No topo do arquivo ficam `title`, `url`, `videoId`, `mode` (`dom` ou `api`), `totalThreads`, `totalReplies`, `visibleCommentCount` e `expectedCommentCount` (o total informado pelo proprio YouTube, usado para validar se a coleta parou cedo).
+No topo do arquivo ficam `title`, `url`, `videoId`, `mode` (`api` ou `crawler`), `totalThreads`, `totalReplies`, `visibleCommentCount` e `expectedCommentCount` (o total informado pelo proprio YouTube, usado para validar se a coleta parou cedo).
+
+O `mode` tambem aparece no nome do arquivo baixado (`...-api-<timestamp>.json` ou `...-crawler-<timestamp>.json`), para dar para saber de onde veio o resultado sem abrir o JSON.
 
 Cada comentario principal aparece em `data`.
 
