@@ -1,7 +1,25 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { buildCommentRecord } = require("../src/extractor-core");
+const { buildCommentRecord, parseCommentCountLabel } = require("../src/extractor-core");
+
+test("parseCommentCountLabel reads localized comment counters", () => {
+  assert.equal(parseCommentCountLabel("68"), 68);
+  assert.equal(parseCommentCountLabel("68 comentarios"), 68);
+  assert.equal(parseCommentCountLabel("Comentarios 68"), 68);
+  assert.equal(parseCommentCountLabel("1.234"), 1234);
+  assert.equal(parseCommentCountLabel("1,2 mil"), 1200);
+  assert.equal(parseCommentCountLabel("12 mil comentarios"), 12000);
+  assert.equal(parseCommentCountLabel("2,5 mi"), 2500000);
+  assert.equal(parseCommentCountLabel("1.2K comments"), 1200);
+});
+
+test("parseCommentCountLabel returns null when there is no number", () => {
+  assert.equal(parseCommentCountLabel(""), null);
+  assert.equal(parseCommentCountLabel(null), null);
+  assert.equal(parseCommentCountLabel("Comentarios"), null);
+  assert.equal(parseCommentCountLabel("Classificar comentarios"), null);
+});
 
 test("buildCommentRecord marks each reply with its parent comment", () => {
   const parent = {

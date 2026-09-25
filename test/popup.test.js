@@ -33,10 +33,11 @@ function createNode(overrides = {}) {
 function createPopupHarness({ initialStatus } = {}) {
   const nodes = {
     "#extractButton": createNode(),
+    "#resetButton": createNode({ textContent: "Reiniciar" }),
     "#skipStepButton": createNode({ textContent: "Pular etapa", disabled: true }),
     "#debugPaths": createNode({ checked: false }),
     "#status": createNode(),
-    "#maxScrollRounds": createNode({ value: "30" }),
+    "#maxScrollRounds": createNode({ value: "12" }),
     "#progressEyebrow": createNode(),
     "#progressTitle": createNode(),
     "#progressSteps": createNode({
@@ -168,4 +169,37 @@ test("popup includes debug paths option when extraction starts", async () => {
 
   const extractMessage = sentMessages.find((message) => message.type === "YT_COMMENTS_EXTRACT");
   assert.equal(extractMessage.options.includeDebugPaths, true);
+});
+
+test("popup uses a lower default scroll round count", async () => {
+  const { nodes, sentMessages } = createPopupHarness();
+  nodes["#maxScrollRounds"].value = "";
+
+  await nodes["#extractButton"].click();
+
+  const extractMessage = sentMessages.find((message) => message.type === "YT_COMMENTS_EXTRACT");
+  assert.equal(extractMessage.options.maxScrollRounds, 12);
+});
+
+test("popup reset clears UI state and sends reset command", async () => {
+  const { nodes, sentMessages, sandbox } = createPopupHarness();
+
+  sandbox.applySavedExtractionState({
+    phase: "complete",
+    runId: "run-reset",
+    stage: "complete",
+    commentsSeen: 25,
+    visibleCommentCount: 30,
+    result: { totalThreads: 20, totalReplies: 10 },
+    error: null,
+  });
+
+  await nodes["#resetButton"].click();
+
+  assert.ok(sentMessages.some((message) => message.type === "YT_COMMENTS_RESET"));
+  assert.equal(nodes["#extractButton"].textContent, "Extrair e baixar JSON");
+  assert.equal(nodes["#commentsMetric"].textContent, "0");
+  assert.equal(nodes["#repliesMetric"].textContent, "0");
+  assert.equal(nodes["#progressTitle"].textContent, "Pronto.");
+  assert.equal(nodes["#status"].textContent, "Aguardando video do YouTube.");
 });
