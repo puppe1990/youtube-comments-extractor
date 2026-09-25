@@ -1,5 +1,6 @@
 const extractButton = document.querySelector("#extractButton");
 const skipStepButton = document.querySelector("#skipStepButton");
+const resetButton = document.querySelector("#resetButton");
 const statusOutput = document.querySelector("#status");
 const maxScrollRoundsInput = document.querySelector("#maxScrollRounds");
 const debugPathsInput = document.querySelector("#debugPaths");
@@ -84,6 +85,22 @@ function resetProgress() {
   updateProgressView();
 }
 
+function resetToInitialState() {
+  currentRunId = null;
+  savedResultForDownload = null;
+  progressState.activeStep = null;
+  progressState.completedSteps = new Set();
+  progressState.failedStep = null;
+  progressEyebrow.textContent = "Status";
+  progressTitle.textContent = "Pronto.";
+  commentsMetric.textContent = "0";
+  repliesMetric.textContent = "0";
+  setSkipStepButton(false);
+  setExtractButton("Extrair e baixar JSON", false);
+  setStatus("Aguardando video do YouTube.", "idle");
+  updateProgressView();
+}
+
 function startStep(stepId, message) {
   progressState.activeStep = stepId;
   progressTitle.textContent = message;
@@ -149,12 +166,21 @@ function getStageTitle(stage) {
   }[stage] || "Extraindo comentarios";
 }
 
-function formatExtractionSummary(visibleCommentCount, extractedCommentCount) {
-  if (!visibleCommentCount && !extractedCommentCount) {
+function formatExtractionSummary(visibleCommentCount, extractedCommentCount, expectedCommentCount) {
+  if (!visibleCommentCount && !extractedCommentCount && !expectedCommentCount) {
     return "";
   }
 
-  return `Na tela: ${visibleCommentCount || 0}\nExtraidos: ${extractedCommentCount || 0}`;
+  const lines = [
+    `Na tela: ${visibleCommentCount || 0}`,
+    `Extraidos: ${extractedCommentCount || 0}`,
+  ];
+
+  if (expectedCommentCount) {
+    lines.push(`Esperados no YouTube: ${expectedCommentCount}`);
+  }
+
+  return lines.join("\n");
 }
 
 function applySavedExtractionState(state) {
@@ -173,7 +199,11 @@ function applySavedExtractionState(state) {
     repliesMetric.textContent = "0";
     restoreProgressFromStage(state.stage);
     const visibleCommentCount = state.visibleCommentCount || 0;
-    const statusSummary = formatExtractionSummary(visibleCommentCount, visibleCommentCount);
+    const statusSummary = formatExtractionSummary(
+      visibleCommentCount,
+      visibleCommentCount,
+      state.expectedCommentCount
+    );
     setStatus(
       `Coleta em andamento nesta aba. Mantenha o video aberto.${statusSummary ? `\n${statusSummary}` : ""}`,
       "working"
@@ -192,7 +222,8 @@ function applySavedExtractionState(state) {
     const extractedCommentCount = state.result.totalThreads + state.result.totalReplies;
     const statusSummary = formatExtractionSummary(
       state.result.visibleCommentCount,
-      extractedCommentCount
+      extractedCommentCount,
+      state.result.expectedCommentCount
     );
     setStatus(
       `Coleta concluida.\nComentarios: ${state.result.totalThreads}\nRespostas: ${state.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
@@ -221,8 +252,12 @@ function handleProgressMessage(message) {
     commentsMetric.textContent = String(message.commentsSeen || 0);
     const round = message.round ? `Rodada ${message.round}/${message.maxRounds}. ` : "";
     const visibleCommentCount = message.visibleCommentCount || message.commentsSeen || 0;
+    const foundCommentCount = message.commentsSeen || 0;
+    const foundLabel = message.expectedCommentCount
+      ? `${foundCommentCount} de ${message.expectedCommentCount}`
+      : String(foundCommentCount);
     setStatus(
-      `${round}${message.commentsSeen || 0} comentarios principais encontrados ate agora.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount)}`,
+      `${round}${foundLabel} comentarios principais encontrados ate agora.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount, message.expectedCommentCount)}`,
       "working"
     );
   }
@@ -233,7 +268,7 @@ function handleProgressMessage(message) {
     const pass = message.pass ? `Passagem ${message.pass}/${message.maxPasses}. ` : "";
     const visibleCommentCount = message.visibleCommentCount || 0;
     setStatus(
-      `${pass}Abrindo respostas disponiveis.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount)}`,
+      `${pass}Abrindo respostas disponiveis.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount, message.expectedCommentCount)}`,
       "working"
     );
   }
@@ -243,7 +278,7 @@ function handleProgressMessage(message) {
     startStep("collect", "Organizando JSON");
     const visibleCommentCount = message.visibleCommentCount || 0;
     setStatus(
-      `Lendo comentarios carregados e montando o arquivo.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount)}`,
+      `Lendo comentarios carregados e montando o arquivo.\n${formatExtractionSummary(visibleCommentCount, visibleCommentCount, message.expectedCommentCount)}`,
       "working"
     );
   }
@@ -307,6 +342,12 @@ async function sendSkipStepMessage(tabId) {
   });
 }
 
+async function sendResetMessage(tabId) {
+  return sendTabMessage(tabId, {
+    type: "YT_COMMENTS_RESET",
+  });
+}
+
 async function restoreStateFromActiveTab() {
   try {
     const tab = await getActiveTab();
@@ -326,6 +367,7 @@ async function restoreStateFromActiveTab() {
 
 renderSteps();
 chrome.runtime.onMessage.addListener(handleProgressMessage);
+resetToInitialState();
 restoreStateFromActiveTab();
 
 extractButton.addEventListener("click", async () => {
@@ -354,7 +396,7 @@ extractButton.addEventListener("click", async () => {
     completeStep("validate");
     startStep("connect", "Conectando ao YouTube");
 
-    const maxScrollRounds = Number(maxScrollRoundsInput.value || 30);
+    const maxScrollRounds = Number(maxScrollRoundsInput.value || 12);
     const includeDebugPaths = Boolean(debugPathsInput?.checked);
     const response = await sendExtractionMessage(tab.id, maxScrollRounds, includeDebugPaths);
 
@@ -374,7 +416,8 @@ extractButton.addEventListener("click", async () => {
     const extractedCommentCount = response.result.totalThreads + response.result.totalReplies;
     const statusSummary = formatExtractionSummary(
       response.result.visibleCommentCount,
-      extractedCommentCount
+      extractedCommentCount,
+      response.result.expectedCommentCount
     );
     setStatus(
       `JSON baixado.\nComentarios: ${response.result.totalThreads}\nRespostas: ${response.result.totalReplies}${statusSummary ? `\n${statusSummary}` : ""}`,
@@ -413,5 +456,20 @@ skipStepButton.addEventListener("click", async () => {
   } catch (error) {
     setSkipStepButton(progressState.activeStep === "replies");
     setStatus(error?.message || String(error), "error");
+  }
+});
+
+resetButton?.addEventListener("click", async () => {
+  resetToInitialState();
+
+  try {
+    const tab = await getActiveTab();
+    if (!tab?.id || !/^https:\/\/(www|m)\.youtube\.com\/watch/.test(tab.url || "")) {
+      return;
+    }
+
+    await sendResetMessage(tab.id);
+  } catch {
+    // Keep popup reset even if the content script is unavailable.
   }
 });

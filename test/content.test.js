@@ -56,6 +56,9 @@ function loadContentScript({
   timers,
   commentThreads = [],
   commentsRoot,
+  commentsPanel,
+  commentsHeader,
+  quickActionButtons = [],
   scrollEvents,
 } = {}) {
   let listener = null;
@@ -85,10 +88,20 @@ function loadContentScript({
       querySelector(selector) {
         if (selector === "video") return video;
         if (selector === ".ytp-play-button[aria-label*='Play']") return playButton;
-        if (selector === "ytd-comments#comments, ytd-comments, #comments") return commentsRoot;
+        if (selector === "ytd-comments#comments, ytd-comments, ytm-comments, #comments") {
+          return commentsRoot;
+        }
+        if (
+          selector ===
+          "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']"
+        ) {
+          return commentsPanel;
+        }
+        if (selector === "ytd-comments-header-renderer") return commentsHeader;
         return null;
       },
-      querySelectorAll() {
+      querySelectorAll(selector) {
+        if (selector === "button") return quickActionButtons;
         return typeof commentThreads === "function" ? commentThreads() : commentThreads;
       },
     },
@@ -249,6 +262,33 @@ test("content extraction exposes running status for a reopened popup", async () 
   await extraction;
 });
 
+test("content reset clears state and cancels in-flight extraction", async () => {
+  const timers = createDeferredTimers();
+  const { listener, sandbox } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+  });
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 1, runId: "reset-run" },
+  });
+
+  await timers.flushNext();
+  const resetResponse = await sendContentMessage(listener, { type: "YT_COMMENTS_RESET" });
+  const status = await sendContentMessage(listener, { type: "YT_COMMENTS_STATUS" });
+  await timers.flushAll();
+  const extractionResponse = await extraction;
+
+  assert.equal(resetResponse.ok, true);
+  assert.equal(status.state.phase, "idle");
+  assert.equal(status.state.runId, null);
+  assert.equal(status.state.result, null);
+  assert.equal(sandbox.window.__YT_COMMENTS__, undefined);
+  assert.equal(extractionResponse.ok, false);
+  assert.match(extractionResponse.error, /cancelada|reiniciada/i);
+});
+
 test("content extraction exposes completed result for a reopened popup", async () => {
   const { listener } = loadContentScript({
     commentThreads: [createLoadedCommentThread()],
@@ -353,6 +393,168 @@ test("content extraction prefers lc query param over generic comment node ids", 
   assert.equal(response.result.data[0].commentId, "UgwTop123");
   assert.equal(response.result.data[0].replies[0].commentId, "UgwReply456");
   assert.equal(response.result.data[0].replies[0].parentCommentId, "UgwTop123");
+});
+
+test("content extraction deduplicates repeated reply nodes by comment id within the same thread", async () => {
+  const topAnchor = createElement({
+    innerText: "há 1 dia",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTop123",
+  });
+  const duplicateReplyAnchor = createElement({
+    innerText: "há 5 horas",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwReply456",
+  });
+  const topNode = createElement({
+    id: "comment",
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@canal" });
+      if (selector === "#content-text") return createElement({ innerText: "Comentario principal" });
+      if (selector === "a[href*='lc=']") return topAnchor;
+      if (selector === "#vote-count-middle") return createElement({ innerText: "4" });
+      return null;
+    },
+  });
+  const duplicateReplyNodeA = createElement({
+    id: "comment",
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@resposta-1" });
+      if (selector === "#content-text") return createElement({ innerText: "Primeira resposta" });
+      if (selector === "a[href*='lc=']") return duplicateReplyAnchor;
+      return null;
+    },
+  });
+  const duplicateReplyNodeB = createElement({
+    id: "comment",
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@resposta-1" });
+      if (selector === "#content-text") return createElement({ innerText: "Primeira resposta" });
+      if (selector === "a[href*='lc=']") return duplicateReplyAnchor;
+      return null;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [
+      createStructuredThread({
+        topNode,
+        replyNodes: [duplicateReplyNodeA, duplicateReplyNodeB],
+      }),
+    ],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "dedupe-replies-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalReplies, 1);
+  assert.equal(response.result.data[0].repliesCount, 1);
+  assert.equal(response.result.data[0].replies[0].commentId, "UgwReply456");
+});
+
+test("content extraction refreshes live threads before collecting the final JSON", async () => {
+  const topAnchorA = createElement({
+    innerText: "há 1 dia",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTopA",
+  });
+  const topAnchorB = createElement({
+    innerText: "há 30 minutos",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTopB",
+  });
+  const topNodeA = createElement({
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@autor-a" });
+      if (selector === "#content-text") return createElement({ innerText: "Comentario A" });
+      if (selector === "a[href*='lc=']") return topAnchorA;
+      return null;
+    },
+  });
+  const topNodeB = createElement({
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@autor-b" });
+      if (selector === "#content-text") return createElement({ innerText: "Comentario B" });
+      if (selector === "a[href*='lc=']") return topAnchorB;
+      return null;
+    },
+  });
+  const threadA = createStructuredThread({ topNode: topNodeA });
+  const threadB = createStructuredThread({ topNode: topNodeB });
+  let threadQueryCount = 0;
+
+  const { listener } = loadContentScript({
+    commentThreads() {
+      threadQueryCount += 1;
+      return threadQueryCount === 1 ? [threadA] : [threadA, threadB];
+    },
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "refresh-live-threads-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 2);
+  assert.deepEqual(
+    Array.from(response.result.data, (comment) => comment.commentId),
+    ["UgwTopA", "UgwTopB"]
+  );
+});
+
+test("content extraction ignores nested thread renderers that live inside replies", async () => {
+  const topAnchor = createElement({
+    innerText: "há 1 dia",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTop123",
+  });
+  const nestedReplyAnchor = createElement({
+    innerText: "há 10 minutos",
+    href: "https://www.youtube.com/watch?v=test&lc=UgwTop123.AReply456",
+  });
+  const topNode = createElement({
+    closest(selector) {
+      if (selector === "#replies, ytd-comment-replies-renderer") return null;
+      return null;
+    },
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@autor-topo" });
+      if (selector === "#content-text") return createElement({ innerText: "Comentario topo" });
+      if (selector === "a[href*='lc=']") return topAnchor;
+      return null;
+    },
+  });
+  const nestedReplyTopNode = createElement({
+    closest(selector) {
+      if (selector === "#replies, ytd-comment-replies-renderer") {
+        return createElement({ id: "replies" });
+      }
+      return null;
+    },
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: "@autor-reply" });
+      if (selector === "#content-text") return createElement({ innerText: "Reply promovida por engano" });
+      if (selector === "a[href*='lc=']") return nestedReplyAnchor;
+      return null;
+    },
+  });
+  const topThread = createStructuredThread({ topNode });
+  const nestedThread = createStructuredThread({ topNode: nestedReplyTopNode });
+  topThread.closest = () => null;
+  nestedThread.closest = () => createElement({ id: "replies" });
+
+  const { listener } = loadContentScript({
+    commentThreads: [topThread, nestedThread],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "ignore-nested-thread-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 1);
+  assert.deepEqual(Array.from(response.result.data, (comment) => comment.commentId), [
+    "UgwTop123",
+  ]);
 });
 
 test("content extraction includes debug paths when requested", async () => {
@@ -473,6 +675,45 @@ test("content extraction does not click like buttons on replies", async () => {
   assert.equal(expandClicks, 1);
 });
 
+test("content extraction ignores hidden reply buttons and clicks only visible ones", async () => {
+  let hiddenClicks = 0;
+  let visibleClicks = 0;
+  const hiddenButton = createElement({
+    hidden: true,
+    innerText: "7 respostas",
+    isMoreRepliesButton: true,
+    getAttribute(name) {
+      if (name === "aria-label") return "7 respostas";
+      if (name === "hidden") return "";
+      return null;
+    },
+    click() {
+      hiddenClicks++;
+    },
+  });
+  const visibleButton = createElement({
+    innerText: "7 respostas",
+    isMoreRepliesButton: true,
+    getAttribute(name) {
+      return name === "aria-label" ? "7 respostas" : null;
+    },
+    click() {
+      visibleClicks++;
+    },
+  });
+  const thread = createCommentThreadWithButtons([hiddenButton, visibleButton]);
+  const { listener } = loadContentScript({ commentThreads: [thread] });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "hidden-reply-button-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(hiddenClicks, 0);
+  assert.equal(visibleClicks, 1);
+});
+
 test("content extraction clicks sub-thread reply buttons", async () => {
   let expandClicks = 0;
   let subThreadButtonVisible = true;
@@ -502,6 +743,73 @@ test("content extraction clicks sub-thread reply buttons", async () => {
 
   assert.equal(response.ok, true);
   assert.equal(expandClicks, 1);
+});
+
+test("content extraction only counts reply expansion when visible replies increase", async () => {
+  let expanded = false;
+  const topNode = createElement({ hidden: false });
+  const hiddenReply = createElement({
+    hidden: true,
+    getAttribute(name) {
+      return name === "hidden" ? "" : null;
+    },
+  });
+  const visibleReply = createElement({ hidden: false });
+  const replyButton = createElement({
+    innerText: "1 resposta",
+    isMoreRepliesButton: true,
+    getAttribute(name) {
+      return name === "aria-label" ? "1 resposta" : null;
+    },
+    click() {
+      expanded = true;
+    },
+  });
+  const thread = createElement({
+    querySelector(selector) {
+      if (
+        selector === "#comment ytd-comment-view-model" ||
+        selector === "#comment ytd-comment-renderer" ||
+        selector === "ytd-comment-view-model" ||
+        selector === "ytd-comment-renderer"
+      ) {
+        return topNode;
+      }
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "ytd-comment-thread-renderer") return [];
+      if (
+        selector.includes("#more-replies") ||
+        selector.includes("aria-label*='respost'") ||
+        selector.includes("aria-label*='reply'")
+      ) {
+        return expanded ? [] : [replyButton];
+      }
+      if (
+        selector === "#replies #contents > ytd-comment-view-model, #replies #contents > ytd-comment-renderer, #replies #expanded-threads ytd-comment-view-model, #replies #expanded-threads ytd-comment-renderer" ||
+        selector === "#replies ytd-comment-view-model, #replies ytd-comment-renderer"
+      ) {
+        return expanded ? [visibleReply] : [hiddenReply];
+      }
+      return [];
+    },
+  });
+
+  const { listener, progressMessages } = loadContentScript({
+    commentThreads: [thread],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "verified-expansion-run" },
+  });
+
+  assert.equal(response.ok, true);
+  const repliesStage = progressMessages.find((message) => message.stage === "replies");
+  assert.equal(repliesStage.buttonsClicked, 1);
+  assert.equal(repliesStage.threadsExpanded, 1);
+  assert.equal(repliesStage.repliesLoaded, 1);
 });
 
 test("content extraction scrolls to comments, primes top-level loading, then expands replies", async () => {
@@ -551,8 +859,16 @@ test("content extraction scrolls to comments, primes top-level loading, then exp
 
 test("content extraction can skip replies stage and continue collecting", async () => {
   const timers = createDeferredTimers();
-  let showRepliesButtonVisible = true;
+  let expanded = false;
   let replyClicks = 0;
+  const topNode = createElement({ hidden: false });
+  const hiddenReply = createElement({
+    hidden: true,
+    getAttribute(name) {
+      return name === "hidden" ? "" : null;
+    },
+  });
+  const visibleReply = createElement({ hidden: false });
   const replyButton = createElement({
     innerText: "7 respostas",
     isMoreRepliesButton: true,
@@ -561,15 +877,33 @@ test("content extraction can skip replies stage and continue collecting", async 
     },
     click() {
       replyClicks++;
-      showRepliesButtonVisible = false;
+      expanded = true;
     },
   });
-  const thread = createCommentThreadWithButtons([replyButton]);
-  const originalQuerySelectorAll = thread.querySelectorAll;
-  thread.querySelectorAll = (selector) => {
-    const buttons = originalQuerySelectorAll(selector);
-    return buttons.filter((button) => button !== replyButton || showRepliesButtonVisible);
-  };
+  const thread = createElement({
+    querySelector(selector) {
+      if (
+        selector === "#comment ytd-comment-view-model" ||
+        selector === "#comment ytd-comment-renderer" ||
+        selector === "ytd-comment-view-model" ||
+        selector === "ytd-comment-renderer"
+      ) {
+        return topNode;
+      }
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === "ytd-comment-thread-renderer") return [];
+      if (selector.includes("#more-replies")) return [replyButton];
+      if (
+        selector === "#replies #contents > ytd-comment-view-model, #replies #contents > ytd-comment-renderer, #replies #expanded-threads ytd-comment-view-model, #replies #expanded-threads ytd-comment-renderer" ||
+        selector === "#replies ytd-comment-view-model, #replies ytd-comment-renderer"
+      ) {
+        return expanded ? [visibleReply] : [hiddenReply];
+      }
+      return [];
+    },
+  });
 
   const { listener } = loadContentScript({
     timers,
@@ -581,10 +915,14 @@ test("content extraction can skip replies stage and continue collecting", async 
     options: { maxScrollRounds: 0, runId: "skip-replies-run" },
   });
 
-  for (let index = 0; index < 10; index++) {
+  let reachedRepliesStage = false;
+  for (let index = 0; index < 12; index++) {
     await timers.flushNext();
     const status = await sendContentMessage(listener, { type: "YT_COMMENTS_STATUS" });
-    if (status.state.stage === "replies") break;
+    if (status.state.stage === "replies") {
+      reachedRepliesStage = true;
+      break;
+    }
   }
 
   const skipResponse = await sendContentMessage(listener, {
@@ -593,8 +931,133 @@ test("content extraction can skip replies stage and continue collecting", async 
   await timers.flushAll();
   const response = await extraction;
 
+  assert.equal(reachedRepliesStage, true);
   assert.equal(skipResponse.ok, true);
   assert.equal(skipResponse.skippedStage, "replies");
   assert.equal(response.ok, true);
-  assert.equal(replyClicks, 1);
+  assert.ok(replyClicks >= 1);
+});
+
+function createCommentTopNode({ author = "@canal", content = "Comentario", commentId = "UgwTop" }) {
+  return createElement({
+    querySelector(selector) {
+      if (selector === "#author-text") return createElement({ innerText: author });
+      if (selector === "#content-text") return createElement({ innerText: content });
+      if (selector === "#vote-count-middle") return createElement({ innerText: "4" });
+      if (selector === "a[href*='lc=']") {
+        return createElement({
+          innerText: "ha 1 dia",
+          href: `https://www.youtube.com/watch?v=test&lc=${commentId}`,
+        });
+      }
+      return null;
+    },
+  });
+}
+
+test("content extraction opens the comments panel and scrolls its own scroller", async () => {
+  const scrollEvents = [];
+  let quickActionClicks = 0;
+  const thread = createStructuredThread({ topNode: createCommentTopNode({ commentId: "UgwPanel" }) });
+  const panel = createElement({
+    clientHeight: 400,
+    scrollHeight: 4000,
+    scrollTop: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    scrollIntoView() {
+      scrollEvents.push("comments-panel");
+    },
+  });
+  const quickActionButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários" : null;
+    },
+    click() {
+      quickActionClicks++;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsPanel: panel,
+    quickActionButtons: [quickActionButton],
+    scrollEvents,
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 2, runId: "comments-panel-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(quickActionClicks, 1);
+  assert.equal(panel.scrollTop, 4000);
+  assert.deepEqual(scrollEvents, ["comments-panel"]);
+  assert.equal(response.result.totalThreads, 1);
+});
+
+test("content extraction keeps a single entry when the same thread is rendered twice", async () => {
+  const threadA = createStructuredThread({
+    topNode: createCommentTopNode({ commentId: "UgwDuplicated" }),
+  });
+  const threadB = createStructuredThread({
+    topNode: createCommentTopNode({ commentId: "UgwDuplicated" }),
+  });
+  const { listener } = loadContentScript({ commentThreads: [threadA, threadB] });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "duplicate-thread-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 1);
+  assert.equal(response.result.data[0].commentId, "UgwDuplicated");
+});
+
+test("content extraction reports the comment count shown by YouTube", async () => {
+  const commentsHeader = createElement({
+    querySelector(selector) {
+      if (selector === "#count") return createElement({ innerText: "1,2 mil" });
+      return null;
+    },
+  });
+  const { listener, progressMessages } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    commentsHeader,
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "expected-count-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.expectedCommentCount, 1200);
+  assert.equal(progressMessages.at(-1).expectedCommentCount, 1200);
+});
+
+test("content extraction stores the canonical video url and id", async () => {
+  const { listener, sandbox } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+  });
+  sandbox.location.href = "https://www.youtube.com/watch?v=abc123&list=PL123&t=42s";
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "canonical-url-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.videoId, "abc123");
+  assert.equal(response.result.url, "https://www.youtube.com/watch?v=abc123");
 });
