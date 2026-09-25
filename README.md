@@ -11,9 +11,14 @@ Extensao Chrome Manifest V3 para carregar comentarios de um video do YouTube, ex
 5. Abra um video em `https://www.youtube.com/watch...`.
 6. Clique no icone da extensao e depois em `Extrair e baixar JSON`.
 
+## Modos de extracao
+
+- `DOM (rolagem da pagina)` (padrao): rola a pagina (ou o painel de comentarios), expande as respostas e le o que estiver renderizado.
+- `API interna (experimental)`: le o token de continuacao da propria pagina e pagina os comentarios pelo endpoint `/youtubei/v1/next`, incluindo as respostas de cada thread. Nao depende de scroll, mas precisa do popup aberto durante a coleta; se o YouTube recusar a requisicao, a extensao volta sozinha para o modo DOM.
+
 ## Formato do JSON
 
-No topo do arquivo ficam `title`, `url`, `videoId`, `totalThreads`, `totalReplies`, `visibleCommentCount` e `expectedCommentCount` (o total informado pelo proprio YouTube, usado para validar se a coleta parou cedo).
+No topo do arquivo ficam `title`, `url`, `videoId`, `mode` (`dom` ou `api`), `totalThreads`, `totalReplies`, `visibleCommentCount` e `expectedCommentCount` (o total informado pelo proprio YouTube, usado para validar se a coleta parou cedo).
 
 Cada comentario principal aparece em `data`.
 
