@@ -40,9 +40,14 @@ function createDeferredTimers() {
       await Promise.resolve();
     },
     async flushAll() {
-      for (let cycle = 0; cycle < 25; cycle++) {
+      let idleCycles = 0;
+
+      for (let cycle = 0; cycle < 500 && idleCycles < 20; cycle++) {
         if (queue.length > 0) {
           queue.shift()();
+          idleCycles = 0;
+        } else {
+          idleCycles++;
         }
         await Promise.resolve();
       }
@@ -71,6 +76,8 @@ function loadContentScript({
     Promise,
     Set,
     String,
+    TextEncoder,
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
     console,
     fetch: fetchImpl,
     globalThis: null,
@@ -693,16 +700,20 @@ test("content extraction ignores hidden reply buttons and clicks only visible on
       hiddenClicks++;
     },
   });
+  let visibleLabel = "7 respostas";
   const visibleButton = createElement({
-    innerText: "7 respostas",
     isMoreRepliesButton: true,
     getAttribute(name) {
-      return name === "aria-label" ? "7 respostas" : null;
+      return name === "aria-label" ? visibleLabel : null;
     },
     click() {
       visibleClicks++;
+      visibleLabel = "Ocultar respostas";
     },
   });
+
+  Object.defineProperty(visibleButton, "innerText", { get: () => visibleLabel });
+
   const thread = createCommentThreadWithButtons([hiddenButton, visibleButton]);
   const { listener } = loadContentScript({ commentThreads: [thread] });
 
@@ -1007,6 +1018,100 @@ test("content extraction opens the comments panel and scrolls its own scroller",
   assert.equal(response.result.totalThreads, 1);
 });
 
+test("content extraction scrolls a scroller nested inside the comments panel", async () => {
+  const scrollEvents = [];
+  const thread = createStructuredThread({
+    topNode: createCommentTopNode({ commentId: "UgxInnerScroller" }),
+  });
+  const innerScroller = createElement({ clientHeight: 300, scrollHeight: 3000, scrollTop: 0 });
+  const panel = createElement({
+    clientHeight: 0,
+    scrollHeight: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    querySelectorAll(selector) {
+      return selector === "*" ? [innerScroller] : [];
+    },
+    scrollIntoView() {
+      scrollEvents.push("comments-panel");
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsPanel: panel,
+    scrollEvents,
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 2, runId: "inner-scroller-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 1);
+  assert.equal(innerScroller.scrollTop, 3000);
+  assert.deepEqual(scrollEvents, ["comments-panel"]);
+});
+
+test("content extraction retries through the comments panel when nothing was loaded", async () => {
+  const thread = createStructuredThread({
+    topNode: createCommentTopNode({ commentId: "UgxPanelRetry" }),
+  });
+  const inlineRoot = createElement({
+    clientHeight: 600,
+    scrollIntoView() {},
+  });
+  const panelScroller = createElement({ clientHeight: 300, scrollHeight: 3000 });
+  const panel = createElement({
+    clientHeight: 700,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    querySelectorAll(selector) {
+      return selector === "*" ? [panelScroller] : [];
+    },
+  });
+  let loaded = false;
+
+  Object.defineProperty(panelScroller, "scrollTop", {
+    get: () => 0,
+    set: () => {
+      loaded = true;
+    },
+  });
+
+  const { listener } = loadContentScript({
+    commentThreads: () => (loaded ? [thread] : []),
+    commentsRoot: inlineRoot,
+    commentsPanel: panel,
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 1, runId: "panel-retry-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalThreads, 1);
+});
+
 test("content extraction keeps a single entry when the same thread is rendered twice", async () => {
   const threadA = createStructuredThread({
     topNode: createCommentTopNode({ commentId: "UgwDuplicated" }),
@@ -1296,6 +1401,76 @@ test("content extraction reads decorated replies from the API entity batch", asy
   assert.equal(reply.parentCommentId, "UgxApiTop");
   assert.equal("replies" in reply, false);
   assert.equal("repliesContinuationToken" in reply, false);
+});
+
+test("content extraction builds the replies token when the API does not provide one", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([createApiThreadItem({ commentId: "UgxNoToken", content: "Sem token" })]),
+      createApiPage([createApiReplyItem("UgxBuiltReply", "Resposta via token construido")]),
+    ],
+    requests
+  );
+  const { listener } = loadContentScript({ commentThreads: [], fetchImpl });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1", videoChannelId: "UCowner" },
+      runId: "built-token-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.totalReplies, 1);
+  assert.equal(response.result.data[0].replies[0].content, "Resposta via token construido");
+  assert.equal(requests.length, 2);
+  assert.equal(
+    requests[1],
+    core.buildRepliesContinuationToken({
+      videoId: "test",
+      commentId: "UgxNoToken",
+      channelId: "UCowner",
+    })
+  );
+});
+
+test("content extraction falls back to the DOM when the comments token is a replies token", async () => {
+  const repliesTargetPage = {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            createApiThreadItem({ commentId: "UgxWrongPage", content: "Pagina errada" }),
+          ],
+          targetId: "comment-replies-item-UgxApiTop",
+        },
+      },
+    ],
+  };
+  const { listener, progressMessages } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    fetchImpl: createFetchStub([repliesTargetPage]),
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1" },
+      maxScrollRounds: 0,
+      runId: "replies-token-run",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.mode, "crawler");
+  assert.equal(response.result.totalThreads, 1);
+  assert.ok(
+    progressMessages.some((message) => message.source === "api" && message.fallback === true)
+  );
 });
 
 test("content extraction falls back to the DOM when the internal API refuses", async () => {

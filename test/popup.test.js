@@ -38,7 +38,7 @@ function createPopupHarness({ initialStatus, apiContext } = {}) {
     "#debugPaths": createNode({ checked: false }),
     "#status": createNode(),
     "#maxScrollRounds": createNode({ value: "12" }),
-    "#extractionMode": createNode({ value: "dom" }),
+    "#extractionMode": createNode({ value: "api" }),
     "#progressEyebrow": createNode(),
     "#progressTitle": createNode(),
     "#progressSteps": createNode({
@@ -214,8 +214,23 @@ test("popup reset clears UI state and sends reset command", async () => {
   assert.equal(nodes["#status"].textContent, "Aguardando video do YouTube.");
 });
 
-test("popup extracts through the DOM by default", async () => {
+test("popup extracts through the API mode by default", async () => {
   const { nodes, sentMessages, scriptingCalls } = createPopupHarness();
+
+  await nodes["#extractButton"].click();
+
+  const extractMessage = sentMessages.find((message) => message.type === "YT_COMMENTS_EXTRACT");
+  assert.equal(extractMessage.options.mode, "api");
+  assert.equal(extractMessage.options.api, null);
+  assert.deepEqual(
+    scriptingCalls.map((injection) => injection.world),
+    ["MAIN", "MAIN"]
+  );
+});
+
+test("popup forwards the DOM mode when it is selected", async () => {
+  const { nodes, sentMessages, scriptingCalls } = createPopupHarness();
+  nodes["#extractionMode"].value = "dom";
 
   await nodes["#extractButton"].click();
 

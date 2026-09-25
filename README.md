@@ -13,8 +13,8 @@ Extensao Chrome Manifest V3 para carregar comentarios de um video do YouTube, ex
 
 ## Modos de extracao
 
-- `DOM (rolagem da pagina)` (padrao): rola a pagina (ou o painel de comentarios), expande as respostas e le o que estiver renderizado.
-- `API interna (experimental)`: le o token de continuacao da propria pagina e pagina os comentarios pelo endpoint `/youtubei/v1/next`, incluindo as respostas de cada thread. Nao depende de scroll, mas precisa do popup aberto durante a coleta; se o YouTube recusar a requisicao, a extensao volta sozinha para o modo DOM.
+- `API interna (recomendado)`: le o token de continuacao da propria pagina e pagina os comentarios pelo endpoint `/youtubei/v1/next`, incluindo as respostas de cada thread (quando a pagina nao entrega o token das respostas, a extensao monta o token). Precisa do popup aberto durante a coleta; se o YouTube recusar a requisicao ou o token nao existir, cai sozinho para o modo DOM.
+- `DOM (rolagem da pagina)`: rola a pagina (ou o painel de comentarios), expande as respostas clicando em "ver respostas" e le o que estiver renderizado. E o fallback do modo API.
 
 ## Formato do JSON
 

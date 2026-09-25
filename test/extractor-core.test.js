@@ -3,11 +3,63 @@ const assert = require("node:assert/strict");
 
 const {
   buildCommentRecord,
+  buildRepliesContinuationToken,
   findCommentsContinuationToken,
+  findVideoOwnerChannelId,
   parseCommentItems,
   parseCommentsResponse,
   parseCommentCountLabel,
 } = require("../src/extractor-core");
+
+const CAPTURED_REPLIES_TOKEN =
+  "Eg0SCzFjVG5McU1QM2RrGAYygwEaUBIaVWd6X0FGVzh5NEFrUmNiOWhuOTRBYUFCQWciAggAKhhVQ1J3b2JWWERJVmljYkZhMjZ6bDBBNWcyCzFjVG5McU1QM2RrQAFICoIBAggBQi9jb21tZW50LXJlcGxpZXMtaXRlbS1VZ3pfQUZXOHk0QWtSY2I5aG45NEFhQUJBZw%3D%3D";
+
+test("buildRepliesContinuationToken reproduces the token captured from youtube", () => {
+  const token = buildRepliesContinuationToken({
+    videoId: "1cTnLqMP3dk",
+    commentId: "Ugz_AFW8y4AkRcb9hn94AaABAg",
+    channelId: "UCRwobVXDIVicbFa26zl0A5g",
+  });
+
+  assert.equal(token, CAPTURED_REPLIES_TOKEN);
+});
+
+test("buildRepliesContinuationToken needs the video, comment and channel ids", () => {
+  assert.equal(buildRepliesContinuationToken({ videoId: "v", commentId: "c" }), null);
+  assert.equal(buildRepliesContinuationToken({ videoId: "v", channelId: "c" }), null);
+  assert.equal(buildRepliesContinuationToken({ commentId: "c", channelId: "c" }), null);
+  assert.equal(buildRepliesContinuationToken({}), null);
+});
+
+test("findVideoOwnerChannelId reads the owner channel from the watch data", () => {
+  const data = {
+    contents: {
+      twoColumnWatchNextResults: {
+        results: {
+          results: {
+            contents: [
+              {
+                videoPrimaryInfoRenderer: {
+                  owner: {
+                    videoOwnerRenderer: {
+                      navigationEndpoint: {
+                        browseEndpoint: { browseId: "UCRwobVXDIVicbFa26zl0A5g" },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+
+  assert.equal(findVideoOwnerChannelId(data), "UCRwobVXDIVicbFa26zl0A5g");
+  assert.equal(findVideoOwnerChannelId({ contents: [] }), null);
+  assert.equal(findVideoOwnerChannelId(null), null);
+});
 
 function createNextPage(items) {
   return {
@@ -115,6 +167,7 @@ function createCommentEntityMutation({
   publishedTime,
   likeCountLiked = "",
   likeCountNotliked = "",
+  withChannelPage = true,
   replyLevel = 0,
 }) {
   return {
@@ -132,9 +185,9 @@ function createCommentEntityMutation({
         author: {
           channelId: "UCRwobVXDIVicbFa26zl0A5g",
           displayName: author,
-          channelPageEndpoint: {
-            innertubeCommand: { browseEndpoint: { canonicalBaseUrl: `/${author}` } },
-          },
+          channelPageEndpoint: withChannelPage
+            ? { innertubeCommand: { browseEndpoint: { canonicalBaseUrl: `/${author}` } } }
+            : undefined,
         },
         toolbar: { likeCountLiked, likeCountNotliked, replyCount: "" },
       },
@@ -142,7 +195,7 @@ function createCommentEntityMutation({
   };
 }
 
-test("parseCommentsResponse reads the decorated reply payload from frameworkUpdates", () => {
+test("parseCommentsResponse reads the decorated reply payload and ignores the liked like count", () => {
   const payload = {
     onResponseReceivedEndpoints: [
       {
@@ -190,7 +243,7 @@ test("parseCommentsResponse reads the decorated reply payload from frameworkUpda
     authorChannelUrl: "/@projetosaas",
     content: "Alô time do Pra Ontem! Dá uma revisada na copy do site",
     published: "há 1 dia",
-    likes: "1",
+    likes: "0",
     replies: [],
     repliesContinuationToken: null,
   });
@@ -235,6 +288,44 @@ test("parseCommentsResponse joins entities by comment id and uses the unliked co
   assert.equal(parsed.comments[0].content, "Comentario decorado");
   assert.equal(parsed.comments[0].likes, "5");
   assert.equal(parsed.comments[0].author, "@canal");
+});
+
+test("parseCommentsResponse derives the channel url from the author handle", () => {
+  const payload = {
+    onResponseReceivedEndpoints: [
+      {
+        appendContinuationItemsAction: {
+          continuationItems: [
+            {
+              commentThreadRenderer: {
+                commentViewModel: { commentViewModel: { commentKey: "HANDLE_ONLY_KEY" } },
+              },
+            },
+          ],
+        },
+      },
+    ],
+    frameworkUpdates: {
+      entityBatchUpdate: {
+        mutations: [
+          createCommentEntityMutation({
+            key: "HANDLE_ONLY_KEY",
+            commentId: "UgxHandleOnly",
+            content: "Sem channelPageEndpoint",
+            author: "@aoli_lab",
+            publishedTime: "há 1 dia",
+            likeCountNotliked: "3",
+            withChannelPage: false,
+          }),
+        ],
+      },
+    },
+  };
+
+  const parsed = parseCommentsResponse(payload);
+
+  assert.equal(parsed.comments[0].authorChannelUrl, "https://www.youtube.com/@aoli_lab");
+  assert.equal(parsed.comments[0].likes, "3");
 });
 
 test("parseCommentItems handles reply pages and the legacy continuation shape", () => {
@@ -300,6 +391,31 @@ test("findCommentsContinuationToken falls back to the comments header renderer",
   };
 
   assert.equal(findCommentsContinuationToken(data), "HEADER_TOKEN");
+});
+
+test("findCommentsContinuationToken skips thread reply tokens on a rendered section", () => {
+  const data = {
+    contents: [
+      {
+        commentsSectionRenderer: {
+          contents: [
+            { commentsHeaderRenderer: { countText: { simpleText: "13" } } },
+            {
+              commentThreadRenderer: {
+                commentViewModel: { commentViewModel: { commentKey: "THREAD_KEY" } },
+                replies: {
+                  commentRepliesRenderer: { contents: [createContinuationItem("REPLY_TOKEN")] },
+                },
+              },
+            },
+            createContinuationItem("SECTION_TOKEN"),
+          ],
+        },
+      },
+    ],
+  };
+
+  assert.equal(findCommentsContinuationToken(data), "SECTION_TOKEN");
 });
 
 test("findCommentsContinuationToken ignores unrelated sections", () => {
