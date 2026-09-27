@@ -11,6 +11,10 @@ const progressSteps = document.querySelector("#progressSteps");
 const commentsMetric = document.querySelector("#commentsMetric");
 const repliesMetric = document.querySelector("#repliesMetric");
 
+function isYouTubeVideoUrl(href) {
+  return /^https:\/\/(www|m)\.youtube\.com\/(watch|shorts\/)/.test(String(href || ""));
+}
+
 const STEP_DEFINITIONS = [
   { id: "validate", label: "Validando video" },
   { id: "connect", label: "Conectando ao YouTube" },
@@ -452,7 +456,7 @@ async function sendResetMessage(tabId) {
 async function restoreStateFromActiveTab() {
   try {
     const tab = await getActiveTab();
-    if (!tab?.id || !/^https:\/\/(www|m)\.youtube\.com\/watch/.test(tab.url || "")) {
+    if (!tab?.id || !isYouTubeVideoUrl(tab.url)) {
       setExtractButton("Extrair e baixar JSON", false);
       return;
     }
@@ -500,7 +504,7 @@ extractButton.addEventListener("click", async () => {
   try {
     const tab = await getActiveTab();
 
-    if (!tab?.id || !/^https:\/\/(www|m)\.youtube\.com\/watch/.test(tab.url || "")) {
+    if (!tab?.id || !isYouTubeVideoUrl(tab.url)) {
       throw new Error("Abra uma pagina de video do YouTube antes de extrair.");
     }
 
@@ -580,7 +584,7 @@ resetButton?.addEventListener("click", async () => {
 
   try {
     const tab = await getActiveTab();
-    if (!tab?.id || !/^https:\/\/(www|m)\.youtube\.com\/watch/.test(tab.url || "")) {
+    if (!tab?.id || !isYouTubeVideoUrl(tab.url)) {
       return;
     }
 

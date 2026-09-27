@@ -30,7 +30,7 @@ function createNode(overrides = {}) {
   };
 }
 
-function createPopupHarness({ initialStatus, apiContext } = {}) {
+function createPopupHarness({ initialStatus, apiContext, tabUrl } = {}) {
   const nodes = {
     "#extractButton": createNode(),
     "#resetButton": createNode({ textContent: "Reiniciar" }),
@@ -97,7 +97,7 @@ function createPopupHarness({ initialStatus, apiContext } = {}) {
       },
       tabs: {
         async query() {
-          return [{ id: 1, url: "https://www.youtube.com/watch?v=test" }];
+          return [{ id: 1, url: tabUrl || "https://www.youtube.com/watch?v=test" }];
         },
         async sendMessage(_tabId, message) {
           sentMessages.push(message);
@@ -284,4 +284,30 @@ test("popup warns when the API result was truncated", async () => {
   });
 
   assert.match(nodes["#status"].textContent, /Parcial/);
+});
+
+test("popup starts extraction on a Shorts URL", async () => {
+  const { nodes, sentMessages } = createPopupHarness({
+    tabUrl: "https://www.youtube.com/shorts/CnTnVrfO348",
+  });
+
+  await nodes["#extractButton"].click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.ok(sentMessages.some((message) => message.type === "YT_COMMENTS_EXTRACT"));
+});
+
+test("popup rejects a YouTube URL that is not a video", async () => {
+  const { nodes, sentMessages } = createPopupHarness({
+    tabUrl: "https://www.youtube.com/feed/subscriptions",
+  });
+
+  await nodes["#extractButton"].click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(
+    sentMessages.some((message) => message.type === "YT_COMMENTS_EXTRACT"),
+    false
+  );
+  assert.match(nodes["#status"].textContent, /Abra uma pagina de video/);
 });
