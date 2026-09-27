@@ -484,6 +484,27 @@ test("findCommentsContinuationToken reads the Shorts engagement panel", () => {
   assert.equal(findCommentsContinuationToken(data), "SHORTS_COMMENTS_TOKEN");
 });
 
+test("findCommentsContinuationToken reads a Shorts panel without commentsHeaderRenderer", () => {
+  const data = {
+    engagementPanels: [
+      {
+        engagementPanelSectionListRenderer: {
+          targetId: "engagement-panel-structured-description",
+          contents: [createContinuationItem("DESCRIPTION_TOKEN")],
+        },
+      },
+      {
+        engagementPanelSectionListRenderer: {
+          targetId: "engagement-panel-comments-section",
+          contents: [createContinuationItem("SHORTS_COMMENTS_TOKEN")],
+        },
+      },
+    ],
+  };
+
+  assert.equal(findCommentsContinuationToken(data), "SHORTS_COMMENTS_TOKEN");
+});
+
 test("parseCommentCountLabel reads localized comment counters", () => {
   assert.equal(parseCommentCountLabel("68"), 68);
   assert.equal(parseCommentCountLabel("68 comentarios"), 68);
