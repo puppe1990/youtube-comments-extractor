@@ -460,6 +460,30 @@ test("findCommentsContinuationToken ignores unrelated sections", () => {
   assert.equal(findCommentsContinuationToken(null), null);
 });
 
+test("findCommentsContinuationToken reads the Shorts engagement panel", () => {
+  const data = {
+    engagementPanels: [
+      {
+        engagementPanelSectionListRenderer: {
+          targetId: "engagement-panel-structured-description",
+          contents: [createContinuationItem("DESCRIPTION_TOKEN")],
+        },
+      },
+      {
+        engagementPanelSectionListRenderer: {
+          targetId: "engagement-panel-comments-section",
+          contents: [
+            { commentsHeaderRenderer: { countText: { simpleText: "2576" } } },
+            createContinuationItem("SHORTS_COMMENTS_TOKEN"),
+          ],
+        },
+      },
+    ],
+  };
+
+  assert.equal(findCommentsContinuationToken(data), "SHORTS_COMMENTS_TOKEN");
+});
+
 test("parseCommentCountLabel reads localized comment counters", () => {
   assert.equal(parseCommentCountLabel("68"), 68);
   assert.equal(parseCommentCountLabel("68 comentarios"), 68);

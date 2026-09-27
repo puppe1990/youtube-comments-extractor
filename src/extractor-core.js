@@ -108,7 +108,12 @@
   function findCommentsContinuationToken(data, depth = 0) {
     if (!data || typeof data !== "object" || depth > 14) return null;
 
-    if (data.sectionIdentifier === "comment-item-section" || data.targetId === "comments-section") {
+    const isCommentsHost =
+      data.sectionIdentifier === "comment-item-section" ||
+      data.targetId === "comments-section" ||
+      data.targetId === "engagement-panel-comments-section";
+
+    if (isCommentsHost) {
       const token = findContinuationItemToken(data.contents) || findContinuationToken(data);
       if (token) return token;
     }
