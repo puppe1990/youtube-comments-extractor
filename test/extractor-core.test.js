@@ -6,6 +6,8 @@ const {
   buildRepliesContinuationToken,
   findCommentsContinuationToken,
   findVideoOwnerChannelId,
+  getCanonicalVideoUrl,
+  getVideoIdFromUrl,
   parseCommentItems,
   parseCommentsResponse,
   parseCommentCountLabel,
@@ -521,6 +523,38 @@ test("parseCommentCountLabel returns null when there is no number", () => {
   assert.equal(parseCommentCountLabel(null), null);
   assert.equal(parseCommentCountLabel("Comentarios"), null);
   assert.equal(parseCommentCountLabel("Classificar comentarios"), null);
+});
+
+test("getVideoIdFromUrl reads watch and Shorts ids", () => {
+  assert.equal(getVideoIdFromUrl("https://www.youtube.com/watch?v=abc123XYZ_1"), "abc123XYZ_1");
+  assert.equal(
+    getVideoIdFromUrl("https://www.youtube.com/watch?v=abc123XYZ_1&list=PL123&t=42s"),
+    "abc123XYZ_1"
+  );
+  assert.equal(getVideoIdFromUrl("https://www.youtube.com/shorts/CnTnVrfO348"), "CnTnVrfO348");
+  assert.equal(getVideoIdFromUrl("https://m.youtube.com/shorts/CnTnVrfO348?si=abc"), "CnTnVrfO348");
+  assert.equal(getVideoIdFromUrl("https://www.youtube.com/feed/subscriptions"), null);
+});
+
+test("getCanonicalVideoUrl keeps Shorts and watch URLs distinct", () => {
+  assert.equal(
+    getCanonicalVideoUrl("https://www.youtube.com/watch?v=abc123&list=PL123&t=42s"),
+    "https://www.youtube.com/watch?v=abc123"
+  );
+  assert.equal(
+    getCanonicalVideoUrl("https://www.youtube.com/shorts/CnTnVrfO348?si=abc"),
+    "https://www.youtube.com/shorts/CnTnVrfO348"
+  );
+  assert.equal(
+    getCanonicalVideoUrl("https://m.youtube.com/shorts/CnTnVrfO348"),
+    "https://www.youtube.com/shorts/CnTnVrfO348"
+  );
+});
+
+test("parseCommentCountLabel reads the Shorts comments action count", () => {
+  assert.equal(parseCommentCountLabel("Ver 2.576 comentários"), 2576);
+  assert.equal(parseCommentCountLabel("View 2,576 comments"), 2576);
+  assert.equal(parseCommentCountLabel("Comentários 2,5 mil"), 2500);
 });
 
 test("buildCommentRecord marks each reply with its parent comment", () => {

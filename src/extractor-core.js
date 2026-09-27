@@ -30,6 +30,23 @@
     return String(value || "").replace(/\s+/g, " ").trim();
   }
 
+  function getVideoIdFromUrl(href) {
+    const value = String(href || "");
+
+    return value.match(/\/shorts\/([^/?&#]+)/)?.[1] || value.match(/[?&]v=([^&#]+)/)?.[1] || null;
+  }
+
+  function getCanonicalVideoUrl(href) {
+    const videoId = getVideoIdFromUrl(href);
+    if (!videoId) return String(href || "");
+
+    if (/\/shorts\//.test(String(href || ""))) {
+      return `https://www.youtube.com/shorts/${videoId}`;
+    }
+
+    return `https://www.youtube.com/watch?v=${videoId}`;
+  }
+
   function parseCommentCountLabel(value) {
     const normalized = normalizeText(value).toLowerCase();
     if (!normalized) return null;
@@ -430,6 +447,8 @@
     buildRepliesContinuationToken,
     findCommentsContinuationToken,
     findVideoOwnerChannelId,
+    getCanonicalVideoUrl,
+    getVideoIdFromUrl,
     normalizeText,
     parseCommentItems,
     parseCommentsResponse,
