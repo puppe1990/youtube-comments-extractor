@@ -311,3 +311,13 @@ test("popup rejects a YouTube URL that is not a video", async () => {
   );
   assert.match(nodes["#status"].textContent, /Abra uma pagina de video/);
 });
+
+test("manifest injects the content script on Shorts pages", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
+  const matches = manifest.content_scripts[0].matches;
+
+  assert.ok(matches.includes("https://www.youtube.com/watch*"));
+  assert.ok(matches.includes("https://m.youtube.com/watch*"));
+  assert.ok(matches.includes("https://www.youtube.com/shorts*"));
+  assert.ok(matches.includes("https://m.youtube.com/shorts*"));
+});

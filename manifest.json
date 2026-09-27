@@ -22,7 +22,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/watch*", "https://m.youtube.com/watch*"],
+      "matches": [
+        "https://www.youtube.com/watch*",
+        "https://m.youtube.com/watch*",
+        "https://www.youtube.com/shorts*",
+        "https://m.youtube.com/shorts*"
+      ],
       "js": ["src/extractor-core.js", "content.js"],
       "run_at": "document_idle"
     }
