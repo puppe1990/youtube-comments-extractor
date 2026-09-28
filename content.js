@@ -157,6 +157,15 @@
     return extractionState.videoId || core.getVideoIdFromUrl(location.href);
   }
 
+  function ensurePinnedVideo() {
+    const currentId = core.getVideoIdFromUrl(location.href);
+    if (extractionState.videoId && currentId && currentId !== extractionState.videoId) {
+      throw new Error(
+        "O Short mudou durante a coleta. Mantenha o Short original aberto e extraia de novo."
+      );
+    }
+  }
+
   function getVideoMeta() {
     const videoId = getPinnedVideoId();
 
@@ -695,6 +704,7 @@
 
     for (let index = 0; index < 3; index++) {
       ensureActiveRun(token);
+      ensurePinnedVideo();
       await scrollToPageEnd();
     }
 
@@ -719,6 +729,7 @@
 
     for (let index = 0; index < maxRounds; index++) {
       ensureActiveRun(token);
+      ensurePinnedVideo();
       await scrollToPageEnd();
 
       mappedThreads = getCommentThreads();
@@ -752,6 +763,7 @@
 
     for (let pass = 0; pass < maxPasses; pass++) {
       ensureActiveRun(token);
+      ensurePinnedVideo();
       if (extractionState.skipRequestedStage === "replies") {
         extractionState.skipRequestedStage = null;
         break;
@@ -1125,6 +1137,7 @@
   }
 
   async function runDomExtraction(maxScrollRounds, includeDebugPaths, runId, token) {
+    ensurePinnedVideo();
     await autoScrollComments(maxScrollRounds, runId, token);
     await expandAllReplies(4, runId, token);
     ensureActiveRun(token);

@@ -1798,6 +1798,28 @@ test("content API replies keep the pinned Shorts video id after the feed advance
   );
 });
 
+test("content DOM extraction stops when the Shorts feed advances", async () => {
+  const timers = createDeferredTimers();
+  const { listener, sandbox } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { mode: "dom", maxScrollRounds: 4, runId: "shorts-feed-advance-run" },
+  });
+
+  await timers.flushNext();
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  await timers.flushAll();
+  const response = await extraction;
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /Short mudou|Mantenha o Short original/i);
+});
+
 function createDecoratedPage({ key, commentId, content, author = "@canal", replyCountA11y = "" }) {
   return {
     onResponseReceivedEndpoints: [
