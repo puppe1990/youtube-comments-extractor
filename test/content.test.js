@@ -1437,6 +1437,60 @@ test("content extraction reports the comment count shown by YouTube", async () =
   assert.equal(progressMessages.at(-1).expectedCommentCount, 1200);
 });
 
+test("content extraction prefers the exact Shorts comments button count", async () => {
+  const commentsButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 2.576 comentários" : null;
+    },
+  });
+  const heading = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários 2,5 mil" : null;
+    },
+  });
+  const { listener, progressMessages } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    quickActionButtons: [commentsButton],
+    queryAllMap: {
+      h2: [heading],
+      "h2[aria-label]": [heading],
+    },
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "shorts-count-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.expectedCommentCount, 2576);
+  assert.equal(progressMessages.at(-1).expectedCommentCount, 2576);
+});
+
+test("content extraction reads the Shorts comments heading when the button has no number", async () => {
+  const heading = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários 2,5 mil" : null;
+    },
+    innerText: "Comentários 2,5 mil",
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    queryAllMap: {
+      h2: [heading],
+      "h2[aria-label]": [heading],
+    },
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "shorts-heading-count-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.expectedCommentCount, 2500);
+});
+
 test("content extraction stores the canonical video url and id", async () => {
   const { listener, sandbox } = loadContentScript({
     commentThreads: [createLoadedCommentThread()],

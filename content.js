@@ -170,16 +170,39 @@
     };
   }
 
+  function getCommentsHeadingCount() {
+    const headings = [
+      ...qsa(document, "h2[aria-label]"),
+      ...qsa(document, "h2"),
+    ];
+
+    for (const heading of headings) {
+      const label = heading.getAttribute?.("aria-label") || text(heading);
+      const normalized = normalizeLabel(label);
+      if (!/comentari/.test(normalized) && !/\bcomments?\b/.test(normalized)) continue;
+      if (isCommentsSortLabel(normalized)) continue;
+      const count = core.parseCommentCountLabel(label);
+      if (typeof count === "number") return count;
+    }
+
+    return null;
+  }
+
   function getExpectedCommentCount() {
     const header = document.querySelector(COMMENTS_COUNT_SELECTOR);
-    if (!header?.querySelector) return null;
+    const headerLabel = header?.querySelector
+      ? text(header.querySelector("#count")) ||
+        header.querySelector("h2[aria-label]")?.getAttribute?.("aria-label") ||
+        ""
+      : "";
+    const headerCount = core.parseCommentCountLabel(headerLabel);
+    const commentsButton = findCommentsQuickActionButton();
+    const buttonCount = core.parseCommentCountLabel(
+      `${text(commentsButton)} ${commentsButton?.getAttribute?.("aria-label") || ""}`
+    );
+    const headingCount = getCommentsHeadingCount();
 
-    const label =
-      text(header.querySelector("#count")) ||
-      header.querySelector("h2[aria-label]")?.getAttribute?.("aria-label") ||
-      "";
-
-    return core.parseCommentCountLabel(label);
+    return buttonCount ?? headerCount ?? headingCount;
   }
 
   function cssEscape(value) {
