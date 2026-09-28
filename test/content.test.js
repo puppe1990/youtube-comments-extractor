@@ -64,9 +64,12 @@ function loadContentScript({
   commentsPanel,
   commentsHeader,
   pageChannelId,
+  pageContextApi,
   quickActionButtons = [],
   fetchImpl,
   scrollEvents,
+  queryMap = {},
+  queryAllMap = {},
 } = {}) {
   let listener = null;
   const progressMessages = [];
@@ -96,6 +99,9 @@ function loadContentScript({
       title: "Video title",
       documentElement: { scrollHeight: 100 },
       querySelector(selector) {
+        if (Object.prototype.hasOwnProperty.call(queryMap, selector)) {
+          return queryMap[selector];
+        }
         if (selector === "video") return video;
         if (selector === ".ytp-play-button[aria-label*='Play']") return playButton;
         if (selector === "ytd-comments#comments, ytd-comments, ytm-comments, #comments") {
@@ -114,6 +120,9 @@ function loadContentScript({
         return null;
       },
       querySelectorAll(selector) {
+        if (Object.prototype.hasOwnProperty.call(queryAllMap, selector)) {
+          return queryAllMap[selector];
+        }
         if (selector === "button") return quickActionButtons;
         return typeof commentThreads === "function" ? commentThreads() : commentThreads;
       },
@@ -122,6 +131,11 @@ function loadContentScript({
       runtime: {
         sendMessage(message) {
           progressMessages.push(message);
+          if (message?.type === "YT_COMMENTS_PAGE_CONTEXT" && pageContextApi) {
+            return {
+              api: typeof pageContextApi === "function" ? pageContextApi() : pageContextApi,
+            };
+          }
         },
         onMessage: {
           addListener(callback) {
@@ -1206,6 +1220,160 @@ test("content extraction opens the comments panel and scrolls its own scroller",
   assert.equal(response.result.totalThreads, 1);
 });
 
+test("content extraction opens the comments panel when text and aria-label both say Comentários", async () => {
+  const scrollEvents = [];
+  let quickActionClicks = 0;
+  const thread = createStructuredThread({ topNode: createCommentTopNode({ commentId: "UgwBothLabels" }) });
+  const panel = createElement({
+    clientHeight: 400,
+    scrollHeight: 4000,
+    scrollTop: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    scrollIntoView() {
+      scrollEvents.push("comments-panel");
+    },
+  });
+  const quickActionButton = createElement({
+    innerText: "Comentários",
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários" : null;
+    },
+    click() {
+      quickActionClicks++;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsPanel: panel,
+    quickActionButtons: [quickActionButton],
+    scrollEvents,
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 2, runId: "comments-both-labels-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(quickActionClicks, 1);
+  assert.equal(panel.scrollTop, 4000);
+  assert.deepEqual(scrollEvents, ["comments-panel"]);
+  assert.equal(response.result.totalThreads, 1);
+});
+
+test("content extraction opens Shorts comments from the view-comments action", async () => {
+  let commentsClicks = 0;
+  let sortClicks = 0;
+  const thread = createStructuredThread({ topNode: createCommentTopNode({ commentId: "UgwShorts" }) });
+  const panel = createElement({
+    clientHeight: 400,
+    scrollHeight: 4000,
+    scrollTop: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    scrollIntoView() {},
+  });
+  const commentsButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 2.576 comentários" : null;
+    },
+    click() {
+      commentsClicks++;
+    },
+  });
+  const sortButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Classificar comentários" : null;
+    },
+    click() {
+      sortClicks++;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsPanel: panel,
+    quickActionButtons: [sortButton, commentsButton],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 1, runId: "shorts-open-comments-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(commentsClicks, 1);
+  assert.equal(sortClicks, 0);
+});
+
+test("content extraction opens the collapsed Shorts comments panel even when ytd-comments exists", async () => {
+  let commentsClicks = 0;
+  const thread = createStructuredThread({
+    topNode: createCommentTopNode({ commentId: "UgwCollapsedShorts" }),
+  });
+  const commentsRoot = createElement({
+    clientHeight: 0,
+    scrollIntoView() {},
+  });
+  const panel = createElement({
+    clientHeight: 400,
+    scrollHeight: 4000,
+    scrollTop: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    scrollIntoView() {},
+  });
+  const commentsButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 2.576 comentários" : null;
+    },
+    click() {
+      commentsClicks++;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsRoot,
+    commentsPanel: panel,
+    quickActionButtons: [commentsButton],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 1, runId: "shorts-collapsed-panel-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(commentsClicks, 1);
+});
+
 test("content extraction scrolls a scroller nested inside the comments panel", async () => {
   const scrollEvents = [];
   const thread = createStructuredThread({
@@ -1376,6 +1544,60 @@ test("content extraction reports the comment count shown by YouTube", async () =
   assert.equal(progressMessages.at(-1).expectedCommentCount, 1200);
 });
 
+test("content extraction prefers the exact Shorts comments button count", async () => {
+  const commentsButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 2.576 comentários" : null;
+    },
+  });
+  const heading = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários 2,5 mil" : null;
+    },
+  });
+  const { listener, progressMessages } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    quickActionButtons: [commentsButton],
+    queryAllMap: {
+      h2: [heading],
+      "h2[aria-label]": [heading],
+    },
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "shorts-count-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.expectedCommentCount, 2576);
+  assert.equal(progressMessages.at(-1).expectedCommentCount, 2576);
+});
+
+test("content extraction reads the Shorts comments heading when the button has no number", async () => {
+  const heading = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários 2,5 mil" : null;
+    },
+    innerText: "Comentários 2,5 mil",
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    queryAllMap: {
+      h2: [heading],
+      "h2[aria-label]": [heading],
+    },
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "shorts-heading-count-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.expectedCommentCount, 2500);
+});
+
 test("content extraction stores the canonical video url and id", async () => {
   const { listener, sandbox } = loadContentScript({
     commentThreads: [createLoadedCommentThread()],
@@ -1390,6 +1612,27 @@ test("content extraction stores the canonical video url and id", async () => {
   assert.equal(response.ok, true);
   assert.equal(response.result.videoId, "abc123");
   assert.equal(response.result.url, "https://www.youtube.com/watch?v=abc123");
+});
+
+test("content extraction stores the canonical Shorts url, id and title", async () => {
+  const { listener, sandbox } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    queryMap: {
+      "ytd-watch-metadata h1": null,
+      h1: createElement({ innerText: "Harvard Mindset to Never Waste Another Second Again" }),
+    },
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348?si=abc";
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "shorts-meta-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.videoId, "CnTnVrfO348");
+  assert.equal(response.result.url, "https://www.youtube.com/shorts/CnTnVrfO348");
+  assert.equal(response.result.title, "Harvard Mindset to Never Waste Another Second Again");
 });
 
 function createApiPage(items) {
@@ -1623,6 +1866,130 @@ test("content extraction builds the replies token when the API does not provide 
       channelId: "UCowner",
     })
   );
+});
+
+test("content API replies keep the pinned Shorts video id after the feed advances", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([createApiThreadItem({ commentId: "UgxNoToken", content: "Sem token" })]),
+      createApiPage([createApiReplyItem("UgxBuiltReply", "Resposta via token construido")]),
+    ],
+    requests
+  );
+  const { listener, sandbox } = loadContentScript({ commentThreads: [], fetchImpl });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1", videoChannelId: "UCowner" },
+      runId: "pinned-shorts-api-run",
+    },
+  });
+
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  const response = await extraction;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.videoId, "CnTnVrfO348");
+  assert.equal(response.result.url, "https://www.youtube.com/shorts/CnTnVrfO348");
+  assert.equal(
+    requests[1],
+    core.buildRepliesContinuationToken({
+      videoId: "CnTnVrfO348",
+      commentId: "UgxNoToken",
+      channelId: "UCowner",
+    })
+  );
+});
+
+test("content DOM extraction stops when the Shorts feed advances", async () => {
+  const timers = createDeferredTimers();
+  const { listener, sandbox } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { mode: "dom", maxScrollRounds: 4, runId: "shorts-feed-advance-run" },
+  });
+
+  await timers.flushNext();
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  await timers.flushAll();
+  const response = await extraction;
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /O video mudou durante a coleta\. Mantenha o video original aberto e extraia de novo\./);
+});
+
+test("content DOM extraction stops if the Shorts feed advances during the collect wait", async () => {
+  const timers = createDeferredTimers();
+  const { listener, sandbox, progressMessages } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { mode: "dom", maxScrollRounds: 0, runId: "shorts-collect-pin-run" },
+  });
+
+  for (let cycle = 0; cycle < 50 && !progressMessages.some((message) => message.stage === "collect"); cycle++) {
+    await timers.flushNext();
+  }
+
+  assert.ok(
+    progressMessages.some((message) => message.stage === "collect"),
+    "expected extraction to reach the collect wait"
+  );
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  await timers.flushAll();
+  const response = await extraction;
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /O video mudou durante a coleta\. Mantenha o video original aberto e extraia de novo\./);
+});
+
+test("content API context refresh stays on the pinned Short after the feed advances", async () => {
+  const timers = createDeferredTimers();
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [createApiPage([createApiThreadItem({ commentId: "UgxWrongShort", content: "Do outro Short" })])],
+    requests
+  );
+  const { listener, sandbox } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+    fetchImpl,
+    pageContextApi: {
+      context: {},
+      continuationToken: "WRONG_SHORT_TOKEN",
+    },
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: null },
+      runId: "api-refresh-pin-run",
+    },
+  });
+
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  await timers.flushAll();
+  const response = await extraction;
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /O video mudou durante a coleta\. Mantenha o video original aberto e extraia de novo\./);
+  assert.deepEqual(requests, []);
 });
 
 function createDecoratedPage({ key, commentId, content, author = "@canal", replyCountA11y = "" }) {

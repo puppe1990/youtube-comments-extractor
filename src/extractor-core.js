@@ -30,6 +30,23 @@
     return String(value || "").replace(/\s+/g, " ").trim();
   }
 
+  function getVideoIdFromUrl(href) {
+    const value = String(href || "");
+
+    return value.match(/\/shorts\/([^/?&#]+)/)?.[1] || value.match(/[?&]v=([^&#]+)/)?.[1] || null;
+  }
+
+  function getCanonicalVideoUrl(href) {
+    const videoId = getVideoIdFromUrl(href);
+    if (!videoId) return String(href || "");
+
+    if (/\/shorts\//.test(String(href || ""))) {
+      return `https://www.youtube.com/shorts/${videoId}`;
+    }
+
+    return `https://www.youtube.com/watch?v=${videoId}`;
+  }
+
   function parseCommentCountLabel(value) {
     const normalized = normalizeText(value).toLowerCase();
     if (!normalized) return null;
@@ -108,7 +125,12 @@
   function findCommentsContinuationToken(data, depth = 0) {
     if (!data || typeof data !== "object" || depth > 14) return null;
 
-    if (data.sectionIdentifier === "comment-item-section" || data.targetId === "comments-section") {
+    const isCommentsHost =
+      data.sectionIdentifier === "comment-item-section" ||
+      data.targetId === "comments-section" ||
+      data.targetId === "engagement-panel-comments-section";
+
+    if (isCommentsHost) {
       const token = findContinuationItemToken(data.contents) || findContinuationToken(data);
       if (token) return token;
     }
@@ -425,6 +447,8 @@
     buildRepliesContinuationToken,
     findCommentsContinuationToken,
     findVideoOwnerChannelId,
+    getCanonicalVideoUrl,
+    getVideoIdFromUrl,
     normalizeText,
     parseCommentItems,
     parseCommentsResponse,

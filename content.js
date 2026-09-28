@@ -70,6 +70,8 @@
     skipRequestedStage: null,
     result: null,
     error: null,
+    videoId: null,
+    pageUrl: null,
     activeToken: 0,
   };
 
@@ -97,6 +99,8 @@
     extractionState.skipRequestedStage = null;
     extractionState.result = null;
     extractionState.error = null;
+    extractionState.videoId = null;
+    extractionState.pageUrl = null;
   }
 
   function cancelActiveExtraction() {
@@ -141,29 +145,73 @@
   }
 
   function getVideoIdFromUrl(href) {
-    return String(href || "").match(/[?&]v=([^&#]+)/)?.[1] || null;
+    return core.getVideoIdFromUrl(href);
+  }
+
+  function pinVideoFromLocation() {
+    extractionState.videoId = core.getVideoIdFromUrl(location.href);
+    extractionState.pageUrl = core.getCanonicalVideoUrl(location.href);
+  }
+
+  function getPinnedVideoId() {
+    return extractionState.videoId || core.getVideoIdFromUrl(location.href);
+  }
+
+  function ensurePinnedVideo() {
+    const currentId = core.getVideoIdFromUrl(location.href);
+    if (extractionState.videoId && currentId && currentId !== extractionState.videoId) {
+      throw new Error(
+        "O video mudou durante a coleta. Mantenha o video original aberto e extraia de novo."
+      );
+    }
   }
 
   function getVideoMeta() {
-    const videoId = getVideoIdFromUrl(location.href);
+    const videoId = getPinnedVideoId();
 
     return {
-      url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : location.href,
+      url: extractionState.pageUrl || core.getCanonicalVideoUrl(location.href),
       videoId,
-      title: text(document.querySelector("ytd-watch-metadata h1")) || document.title,
+      title:
+        text(document.querySelector("ytd-watch-metadata h1")) ||
+        text(document.querySelector("h1")) ||
+        document.title,
     };
+  }
+
+  function getCommentsHeadingCount() {
+    const headings = [
+      ...qsa(document, "h2[aria-label]"),
+      ...qsa(document, "h2"),
+    ];
+
+    for (const heading of headings) {
+      const label = heading.getAttribute?.("aria-label") || text(heading);
+      const normalized = normalizeLabel(label);
+      if (!/comentari/.test(normalized) && !/\bcomments?\b/.test(normalized)) continue;
+      if (isCommentsSortLabel(normalized)) continue;
+      const count = core.parseCommentCountLabel(label);
+      if (typeof count === "number") return count;
+    }
+
+    return null;
   }
 
   function getExpectedCommentCount() {
     const header = document.querySelector(COMMENTS_COUNT_SELECTOR);
-    if (!header?.querySelector) return null;
+    const headerLabel = header?.querySelector
+      ? text(header.querySelector("#count")) ||
+        header.querySelector("h2[aria-label]")?.getAttribute?.("aria-label") ||
+        ""
+      : "";
+    const headerCount = core.parseCommentCountLabel(headerLabel);
+    const commentsButton = findCommentsQuickActionButton();
+    const buttonCount = core.parseCommentCountLabel(
+      `${text(commentsButton)} ${commentsButton?.getAttribute?.("aria-label") || ""}`
+    );
+    const headingCount = getCommentsHeadingCount();
 
-    const label =
-      text(header.querySelector("#count")) ||
-      header.querySelector("h2[aria-label]")?.getAttribute?.("aria-label") ||
-      "";
-
-    return core.parseCommentCountLabel(label);
+    return buttonCount ?? headerCount ?? headingCount;
   }
 
   function cssEscape(value) {
@@ -445,11 +493,27 @@
     );
   }
 
+  function isCommentsSortLabel(label) {
+    return /\b(classificar|sort|ordenar)\b/.test(label);
+  }
+
+  function isCommentsOpenLabel(label) {
+    if (!label || isCommentsSortLabel(label)) return false;
+    if (COMMENTS_BUTTON_LABELS.has(label)) return true;
+
+    return (
+      (/\bver\b/.test(label) && /comentari/.test(label)) ||
+      (/\bview\b/.test(label) && /\bcomments?\b/.test(label))
+    );
+  }
+
   function findCommentsQuickActionButton() {
     return (
       qsa(document, "button").find((button) => {
         if (!isInteractableButton(button)) return false;
-        return COMMENTS_BUTTON_LABELS.has(normalizeLabel(button.getAttribute?.("aria-label")));
+        const textLabel = normalizeLabel(text(button)).trim();
+        const ariaLabel = normalizeLabel(button.getAttribute?.("aria-label") || "").trim();
+        return isCommentsOpenLabel(textLabel) || isCommentsOpenLabel(ariaLabel);
       }) || null
     );
   }
@@ -580,6 +644,12 @@
   }
 
   async function ensureCommentsVisible() {
+    const panel = findCommentsPanel();
+    if (panel && panel.getAttribute?.("visibility") !== PANEL_EXPANDED_VISIBILITY) {
+      await openCommentsPanel();
+      return;
+    }
+
     if (document.querySelector(INLINE_COMMENTS_SELECTOR)) return;
 
     await openCommentsPanel();
@@ -639,6 +709,7 @@
 
     for (let index = 0; index < 3; index++) {
       ensureActiveRun(token);
+      ensurePinnedVideo();
       await scrollToPageEnd();
     }
 
@@ -663,6 +734,7 @@
 
     for (let index = 0; index < maxRounds; index++) {
       ensureActiveRun(token);
+      ensurePinnedVideo();
       await scrollToPageEnd();
 
       mappedThreads = getCommentThreads();
@@ -696,6 +768,7 @@
 
     for (let pass = 0; pass < maxPasses; pass++) {
       ensureActiveRun(token);
+      ensurePinnedVideo();
       if (extractionState.skipRequestedStage === "replies") {
         extractionState.skipRequestedStage = null;
         break;
@@ -729,6 +802,8 @@
       if (emptyPasses >= 2) break;
       await wait(loadedNothing ? 1200 : 150);
     }
+
+    ensurePinnedVideo();
   }
 
   function describeReplyControls(thread) {
@@ -824,7 +899,10 @@
 
     await moveToCommentsSection();
     ensureActiveRun(token);
+    ensurePinnedVideo();
     const refreshed = await requestPageApiContext();
+    ensureActiveRun(token);
+    ensurePinnedVideo();
 
     return refreshed?.continuationToken && refreshed?.context ? refreshed : null;
   }
@@ -875,7 +953,7 @@
 
     return {
       token: core.buildRepliesContinuationToken({
-        videoId: getVideoIdFromUrl(location.href),
+        videoId: getPinnedVideoId(),
         commentId: comment.commentId,
         channelId: api.videoChannelId || getPageChannelId(),
       }),
@@ -1069,6 +1147,7 @@
   }
 
   async function runDomExtraction(maxScrollRounds, includeDebugPaths, runId, token) {
+    ensurePinnedVideo();
     await autoScrollComments(maxScrollRounds, runId, token);
     await expandAllReplies(4, runId, token);
     ensureActiveRun(token);
@@ -1081,6 +1160,7 @@
     });
     await wait(1200);
     ensureActiveRun(token);
+    ensurePinnedVideo();
 
     return collect(getCommentThreads(), includeDebugPaths);
   }
@@ -1104,6 +1184,7 @@
     extractionState.skipRequestedStage = null;
     extractionState.result = null;
     extractionState.error = null;
+    pinVideoFromLocation();
 
     const apiResult =
       options.mode === "api" ? await tryApiExtraction(options.api || null, options, runId, token) : null;
