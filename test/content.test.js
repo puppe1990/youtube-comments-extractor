@@ -67,6 +67,8 @@ function loadContentScript({
   quickActionButtons = [],
   fetchImpl,
   scrollEvents,
+  queryMap = {},
+  queryAllMap = {},
 } = {}) {
   let listener = null;
   const progressMessages = [];
@@ -96,6 +98,9 @@ function loadContentScript({
       title: "Video title",
       documentElement: { scrollHeight: 100 },
       querySelector(selector) {
+        if (Object.prototype.hasOwnProperty.call(queryMap, selector)) {
+          return queryMap[selector];
+        }
         if (selector === "video") return video;
         if (selector === ".ytp-play-button[aria-label*='Play']") return playButton;
         if (selector === "ytd-comments#comments, ytd-comments, ytm-comments, #comments") {
@@ -114,6 +119,9 @@ function loadContentScript({
         return null;
       },
       querySelectorAll(selector) {
+        if (Object.prototype.hasOwnProperty.call(queryAllMap, selector)) {
+          return queryAllMap[selector];
+        }
         if (selector === "button") return quickActionButtons;
         return typeof commentThreads === "function" ? commentThreads() : commentThreads;
       },
@@ -1392,6 +1400,27 @@ test("content extraction stores the canonical video url and id", async () => {
   assert.equal(response.result.url, "https://www.youtube.com/watch?v=abc123");
 });
 
+test("content extraction stores the canonical Shorts url, id and title", async () => {
+  const { listener, sandbox } = loadContentScript({
+    commentThreads: [createLoadedCommentThread()],
+    queryMap: {
+      "ytd-watch-metadata h1": null,
+      h1: createElement({ innerText: "Harvard Mindset to Never Waste Another Second Again" }),
+    },
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348?si=abc";
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 0, runId: "shorts-meta-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.videoId, "CnTnVrfO348");
+  assert.equal(response.result.url, "https://www.youtube.com/shorts/CnTnVrfO348");
+  assert.equal(response.result.title, "Harvard Mindset to Never Waste Another Second Again");
+});
+
 function createApiPage(items) {
   return {
     onResponseReceivedEndpoints: [
@@ -1619,6 +1648,43 @@ test("content extraction builds the replies token when the API does not provide 
     requests[1],
     core.buildRepliesContinuationToken({
       videoId: "test",
+      commentId: "UgxNoToken",
+      channelId: "UCowner",
+    })
+  );
+});
+
+test("content API replies keep the pinned Shorts video id after the feed advances", async () => {
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [
+      createApiPage([createApiThreadItem({ commentId: "UgxNoToken", content: "Sem token" })]),
+      createApiPage([createApiReplyItem("UgxBuiltReply", "Resposta via token construido")]),
+    ],
+    requests
+  );
+  const { listener, sandbox } = loadContentScript({ commentThreads: [], fetchImpl });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: "PAGE_1", videoChannelId: "UCowner" },
+      runId: "pinned-shorts-api-run",
+    },
+  });
+
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  const response = await extraction;
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.videoId, "CnTnVrfO348");
+  assert.equal(response.result.url, "https://www.youtube.com/shorts/CnTnVrfO348");
+  assert.equal(
+    requests[1],
+    core.buildRepliesContinuationToken({
+      videoId: "CnTnVrfO348",
       commentId: "UgxNoToken",
       channelId: "UCowner",
     })

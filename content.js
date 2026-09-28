@@ -70,6 +70,8 @@
     skipRequestedStage: null,
     result: null,
     error: null,
+    videoId: null,
+    pageUrl: null,
     activeToken: 0,
   };
 
@@ -97,6 +99,8 @@
     extractionState.skipRequestedStage = null;
     extractionState.result = null;
     extractionState.error = null;
+    extractionState.videoId = null;
+    extractionState.pageUrl = null;
   }
 
   function cancelActiveExtraction() {
@@ -141,16 +145,28 @@
   }
 
   function getVideoIdFromUrl(href) {
-    return String(href || "").match(/[?&]v=([^&#]+)/)?.[1] || null;
+    return core.getVideoIdFromUrl(href);
+  }
+
+  function pinVideoFromLocation() {
+    extractionState.videoId = core.getVideoIdFromUrl(location.href);
+    extractionState.pageUrl = core.getCanonicalVideoUrl(location.href);
+  }
+
+  function getPinnedVideoId() {
+    return extractionState.videoId || core.getVideoIdFromUrl(location.href);
   }
 
   function getVideoMeta() {
-    const videoId = getVideoIdFromUrl(location.href);
+    const videoId = getPinnedVideoId();
 
     return {
-      url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : location.href,
+      url: extractionState.pageUrl || core.getCanonicalVideoUrl(location.href),
       videoId,
-      title: text(document.querySelector("ytd-watch-metadata h1")) || document.title,
+      title:
+        text(document.querySelector("ytd-watch-metadata h1")) ||
+        text(document.querySelector("h1")) ||
+        document.title,
     };
   }
 
@@ -875,7 +891,7 @@
 
     return {
       token: core.buildRepliesContinuationToken({
-        videoId: getVideoIdFromUrl(location.href),
+        videoId: getPinnedVideoId(),
         commentId: comment.commentId,
         channelId: api.videoChannelId || getPageChannelId(),
       }),
@@ -1104,6 +1120,7 @@
     extractionState.skipRequestedStage = null;
     extractionState.result = null;
     extractionState.error = null;
+    pinVideoFromLocation();
 
     const apiResult =
       options.mode === "api" ? await tryApiExtraction(options.api || null, options, runId, token) : null;
