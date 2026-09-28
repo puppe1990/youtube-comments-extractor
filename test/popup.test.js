@@ -312,6 +312,47 @@ test("popup rejects a YouTube URL that is not a video", async () => {
   assert.match(nodes["#status"].textContent, /Abra uma pagina de video/);
 });
 
+test("popup page context reads the Shorts comments panel token", () => {
+  const core = require("../src/extractor-core");
+  const { sandbox } = createPopupHarness();
+  const panelData = {
+    targetId: "engagement-panel-comments-section",
+    contents: [
+      {
+        continuationItemRenderer: {
+          continuationEndpoint: { continuationCommand: { token: "SHORTS_PANEL_TOKEN" } },
+        },
+      },
+    ],
+  };
+
+  sandbox.YouTubeCommentsExtractorCore = core;
+  sandbox.globalThis.YouTubeCommentsExtractorCore = core;
+  sandbox.globalThis.ytInitialData = null;
+  sandbox.globalThis.ytcfg = { get() { return null; } };
+  const originalQuery = sandbox.document.querySelector.bind(sandbox.document);
+  sandbox.document.querySelector = (selector) => {
+    if (selector === "ytd-comments") return null;
+    if (
+      selector ===
+      "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']"
+    ) {
+      return { data: panelData };
+    }
+    if (
+      selector ===
+      "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section'] ytd-comments"
+    ) {
+      return null;
+    }
+    return originalQuery(selector);
+  };
+
+  const api = sandbox.readPageApiContextInPage();
+
+  assert.equal(api.continuationToken, "SHORTS_PANEL_TOKEN");
+});
+
 test("manifest injects the content script on Shorts pages", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
   const matches = manifest.content_scripts[0].matches;

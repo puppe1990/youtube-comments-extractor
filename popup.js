@@ -392,6 +392,7 @@ function readPageApiContextInPage() {
   const sources = [
     globalThis.ytInitialData,
     document.querySelector("ytd-comments")?.data,
+    document.querySelector(panelSelector)?.data,
     document.querySelector(`${panelSelector} ytd-comments`)?.data,
   ];
   const ytcfg = globalThis.ytcfg;
