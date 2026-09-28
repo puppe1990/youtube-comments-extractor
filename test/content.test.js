@@ -1214,6 +1214,59 @@ test("content extraction opens the comments panel and scrolls its own scroller",
   assert.equal(response.result.totalThreads, 1);
 });
 
+test("content extraction opens Shorts comments from the view-comments action", async () => {
+  let commentsClicks = 0;
+  let sortClicks = 0;
+  const thread = createStructuredThread({ topNode: createCommentTopNode({ commentId: "UgwShorts" }) });
+  const panel = createElement({
+    clientHeight: 400,
+    scrollHeight: 4000,
+    scrollTop: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    scrollIntoView() {},
+  });
+  const commentsButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Ver 2.576 comentários" : null;
+    },
+    click() {
+      commentsClicks++;
+    },
+  });
+  const sortButton = createElement({
+    getAttribute(name) {
+      return name === "aria-label" ? "Classificar comentários" : null;
+    },
+    click() {
+      sortClicks++;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsPanel: panel,
+    quickActionButtons: [sortButton, commentsButton],
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 1, runId: "shorts-open-comments-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(commentsClicks, 1);
+  assert.equal(sortClicks, 0);
+});
+
 test("content extraction scrolls a scroller nested inside the comments panel", async () => {
   const scrollEvents = [];
   const thread = createStructuredThread({

@@ -461,11 +461,28 @@
     );
   }
 
+  function isCommentsSortLabel(label) {
+    return /\b(classificar|sort|ordenar)\b/.test(label);
+  }
+
+  function isCommentsOpenLabel(label) {
+    if (!label || isCommentsSortLabel(label)) return false;
+    if (COMMENTS_BUTTON_LABELS.has(label)) return true;
+
+    return (
+      (/\bver\b/.test(label) && /comentari/.test(label)) ||
+      (/\bview\b/.test(label) && /\bcomments?\b/.test(label))
+    );
+  }
+
   function findCommentsQuickActionButton() {
     return (
       qsa(document, "button").find((button) => {
         if (!isInteractableButton(button)) return false;
-        return COMMENTS_BUTTON_LABELS.has(normalizeLabel(button.getAttribute?.("aria-label")));
+        const label = normalizeLabel(
+          `${text(button)} ${button.getAttribute?.("aria-label") || ""}`
+        ).trim();
+        return isCommentsOpenLabel(label);
       }) || null
     );
   }
