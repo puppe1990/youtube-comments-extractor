@@ -8,7 +8,7 @@ Extensao Chrome Manifest V3 para carregar comentarios de um video do YouTube, ex
 2. Ative `Modo do desenvolvedor`.
 3. Clique em `Carregar sem compactacao`.
 4. Selecione esta pasta.
-5. Abra um video em `https://www.youtube.com/watch...`.
+5. Abra um video em `https://www.youtube.com/watch...` ou um Short em `https://www.youtube.com/shorts...`.
 6. Clique no icone da extensao e depois em `Extrair e baixar JSON`.
 
 ## Modos de extracao
@@ -16,9 +16,11 @@ Extensao Chrome Manifest V3 para carregar comentarios de um video do YouTube, ex
 - `API interna (recomendado)`: le o token de continuacao da propria pagina e pagina os comentarios pelo endpoint `/youtubei/v1/next`, incluindo as respostas de cada thread (quando a pagina nao entrega o token das respostas, a extensao monta o token). Precisa do popup aberto durante a coleta; se o YouTube recusar a requisicao ou o token nao existir, cai sozinho para o modo DOM.
 - `DOM (rolagem da pagina)`: rola a pagina (ou o painel de comentarios), expande as respostas clicando em "ver respostas" e le o que estiver renderizado. E o fallback do modo API.
 
+Shorts usam o mesmo fluxo. A coleta vale so para o Short da URL; se o feed avancar no modo DOM, a extensao para e pede para manter o Short original aberto.
+
 ## Formato do JSON
 
-No topo do arquivo ficam `title`, `url`, `videoId`, `mode` (`api` ou `crawler`), `totalThreads`, `totalReplies`, `visibleCommentCount` e `expectedCommentCount` (o total informado pelo proprio YouTube, usado para validar se a coleta parou cedo).
+No topo do arquivo ficam `title`, `url`, `videoId`, `mode` (`api` ou `crawler`), `totalThreads`, `totalReplies`, `visibleCommentCount` e `expectedCommentCount` (o total informado pelo proprio YouTube, usado para validar se a coleta parou cedo). Quando a pagina e um Short, `url` e `https://www.youtube.com/shorts/ID`.
 
 O `mode` tambem aparece no nome do arquivo baixado (`...-api-<timestamp>.json` ou `...-crawler-<timestamp>.json`), para dar para saber de onde veio o resultado sem abrir o JSON.
 
