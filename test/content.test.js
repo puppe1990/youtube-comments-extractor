@@ -64,6 +64,7 @@ function loadContentScript({
   commentsPanel,
   commentsHeader,
   pageChannelId,
+  pageContextApi,
   quickActionButtons = [],
   fetchImpl,
   scrollEvents,
@@ -130,6 +131,11 @@ function loadContentScript({
       runtime: {
         sendMessage(message) {
           progressMessages.push(message);
+          if (message?.type === "YT_COMMENTS_PAGE_CONTEXT" && pageContextApi) {
+            return {
+              api: typeof pageContextApi === "function" ? pageContextApi() : pageContextApi,
+            };
+          }
         },
         onMessage: {
           addListener(callback) {
@@ -1918,7 +1924,72 @@ test("content DOM extraction stops when the Shorts feed advances", async () => {
   const response = await extraction;
 
   assert.equal(response.ok, false);
-  assert.match(response.error, /Short mudou|Mantenha o Short original/i);
+  assert.match(response.error, /O video mudou durante a coleta\. Mantenha o video original aberto e extraia de novo\./);
+});
+
+test("content DOM extraction stops if the Shorts feed advances during the collect wait", async () => {
+  const timers = createDeferredTimers();
+  const { listener, sandbox, progressMessages } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { mode: "dom", maxScrollRounds: 0, runId: "shorts-collect-pin-run" },
+  });
+
+  for (let cycle = 0; cycle < 50 && !progressMessages.some((message) => message.stage === "collect"); cycle++) {
+    await timers.flushNext();
+  }
+
+  assert.ok(
+    progressMessages.some((message) => message.stage === "collect"),
+    "expected extraction to reach the collect wait"
+  );
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  await timers.flushAll();
+  const response = await extraction;
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /O video mudou durante a coleta\. Mantenha o video original aberto e extraia de novo\./);
+});
+
+test("content API context refresh stays on the pinned Short after the feed advances", async () => {
+  const timers = createDeferredTimers();
+  const requests = [];
+  const fetchImpl = createFetchStub(
+    [createApiPage([createApiThreadItem({ commentId: "UgxWrongShort", content: "Do outro Short" })])],
+    requests
+  );
+  const { listener, sandbox } = loadContentScript({
+    timers,
+    commentThreads: [createLoadedCommentThread()],
+    fetchImpl,
+    pageContextApi: {
+      context: {},
+      continuationToken: "WRONG_SHORT_TOKEN",
+    },
+  });
+  sandbox.location.href = "https://www.youtube.com/shorts/CnTnVrfO348";
+
+  const extraction = sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: {
+      mode: "api",
+      api: { context: {}, continuationToken: null },
+      runId: "api-refresh-pin-run",
+    },
+  });
+
+  sandbox.location.href = "https://www.youtube.com/shorts/OTHERVID123";
+  await timers.flushAll();
+  const response = await extraction;
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /O video mudou durante a coleta\. Mantenha o video original aberto e extraia de novo\./);
+  assert.deepEqual(requests, []);
 });
 
 function createDecoratedPage({ key, commentId, content, author = "@canal", replyCountA11y = "" }) {

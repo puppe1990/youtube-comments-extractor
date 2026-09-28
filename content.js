@@ -161,7 +161,7 @@
     const currentId = core.getVideoIdFromUrl(location.href);
     if (extractionState.videoId && currentId && currentId !== extractionState.videoId) {
       throw new Error(
-        "O Short mudou durante a coleta. Mantenha o Short original aberto e extraia de novo."
+        "O video mudou durante a coleta. Mantenha o video original aberto e extraia de novo."
       );
     }
   }
@@ -802,6 +802,8 @@
       if (emptyPasses >= 2) break;
       await wait(loadedNothing ? 1200 : 150);
     }
+
+    ensurePinnedVideo();
   }
 
   function describeReplyControls(thread) {
@@ -897,7 +899,10 @@
 
     await moveToCommentsSection();
     ensureActiveRun(token);
+    ensurePinnedVideo();
     const refreshed = await requestPageApiContext();
+    ensureActiveRun(token);
+    ensurePinnedVideo();
 
     return refreshed?.continuationToken && refreshed?.context ? refreshed : null;
   }
@@ -1155,6 +1160,7 @@
     });
     await wait(1200);
     ensureActiveRun(token);
+    ensurePinnedVideo();
 
     return collect(getCommentThreads(), includeDebugPaths);
   }
