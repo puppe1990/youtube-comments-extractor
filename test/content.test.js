@@ -1214,6 +1214,57 @@ test("content extraction opens the comments panel and scrolls its own scroller",
   assert.equal(response.result.totalThreads, 1);
 });
 
+test("content extraction opens the comments panel when text and aria-label both say Comentários", async () => {
+  const scrollEvents = [];
+  let quickActionClicks = 0;
+  const thread = createStructuredThread({ topNode: createCommentTopNode({ commentId: "UgwBothLabels" }) });
+  const panel = createElement({
+    clientHeight: 400,
+    scrollHeight: 4000,
+    scrollTop: 0,
+    closest(selector) {
+      const panelSelector =
+        "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-comments-section']";
+      return selector === panelSelector ? this : null;
+    },
+    getAttribute(name) {
+      return name === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : null;
+    },
+    querySelector(selector) {
+      return selector === "ytd-comment-thread-renderer" ? thread : null;
+    },
+    scrollIntoView() {
+      scrollEvents.push("comments-panel");
+    },
+  });
+  const quickActionButton = createElement({
+    innerText: "Comentários",
+    getAttribute(name) {
+      return name === "aria-label" ? "Comentários" : null;
+    },
+    click() {
+      quickActionClicks++;
+    },
+  });
+  const { listener } = loadContentScript({
+    commentThreads: [thread],
+    commentsPanel: panel,
+    quickActionButtons: [quickActionButton],
+    scrollEvents,
+  });
+
+  const response = await sendContentMessage(listener, {
+    type: "YT_COMMENTS_EXTRACT",
+    options: { maxScrollRounds: 2, runId: "comments-both-labels-run" },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(quickActionClicks, 1);
+  assert.equal(panel.scrollTop, 4000);
+  assert.deepEqual(scrollEvents, ["comments-panel"]);
+  assert.equal(response.result.totalThreads, 1);
+});
+
 test("content extraction opens Shorts comments from the view-comments action", async () => {
   let commentsClicks = 0;
   let sortClicks = 0;

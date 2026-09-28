@@ -511,10 +511,9 @@
     return (
       qsa(document, "button").find((button) => {
         if (!isInteractableButton(button)) return false;
-        const label = normalizeLabel(
-          `${text(button)} ${button.getAttribute?.("aria-label") || ""}`
-        ).trim();
-        return isCommentsOpenLabel(label);
+        const textLabel = normalizeLabel(text(button)).trim();
+        const ariaLabel = normalizeLabel(button.getAttribute?.("aria-label") || "").trim();
+        return isCommentsOpenLabel(textLabel) || isCommentsOpenLabel(ariaLabel);
       }) || null
     );
   }
