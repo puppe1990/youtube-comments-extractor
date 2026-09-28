@@ -644,6 +644,12 @@
   }
 
   async function ensureCommentsVisible() {
+    const panel = findCommentsPanel();
+    if (panel && panel.getAttribute?.("visibility") !== PANEL_EXPANDED_VISIBILITY) {
+      await openCommentsPanel();
+      return;
+    }
+
     if (document.querySelector(INLINE_COMMENTS_SELECTOR)) return;
 
     await openCommentsPanel();
